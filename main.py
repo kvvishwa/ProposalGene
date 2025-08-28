@@ -47,7 +47,7 @@ section[data-testid="stChatMessage"] { margin-bottom: .35rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 Proposal Studio")
+st.title("BCT Proposal Studio")
 cfg = load_config()
 oai = OpenAI(api_key=cfg.OPENAI_API_KEY)
 
