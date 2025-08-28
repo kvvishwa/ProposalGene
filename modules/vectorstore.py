@@ -7,6 +7,23 @@ from typing import List, Optional, Iterable
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+import sys
+import pysqlite3  # comes from pysqlite3-binary
+import sqlite3 as _sqlite3
+# --- SQLite shim for Azure App Service (Chroma needs sqlite >= 3.35) ---
+# If the system sqlite3 is old, force Python to use the one bundled with pysqlite3-binary.
+try:
+    
+    ver_tuple = tuple(int(x) for x in _sqlite3.sqlite_version.split("."))
+    _NEEDS_SHIM = ver_tuple < (3, 35, 0)
+except Exception:
+    _NEEDS_SHIM = True
+
+if _NEEDS_SHIM:
+    
+    sys.modules["sqlite3"] = pysqlite3
+    sys.modules["sqlite3.dbapi2"] = pysqlite3.dbapi2
+# --- end shim ---
 
 # --- robust local imports ---
 try:
