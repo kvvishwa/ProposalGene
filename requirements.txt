@@ -4,22 +4,15 @@ requests>=2.31.0
 
 openai>=1.35.0
 langchain>=0.2.0
-langchain-community>=0.2.0
 langchain-core>=0.2.0
+langchain-community>=0.2.0
 langchain-openai>=0.1.6
 
-# Vector store (light)
-docarray[hnswlib]>=0.40.0
-
-# Document parsing
 python-docx>=1.1.0
 python-pptx>=0.6.23
 PyPDF2>=3.0.1
 docx2txt>=0.8
-# (Optional) unstructured is heavy; omit unless needed
-# unstructured>=0.14.5
 
-# Utilities
 pandas>=2.2.2
 numpy>=1.26.4
 lxml>=5.2.2
