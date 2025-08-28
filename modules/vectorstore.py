@@ -1,25 +1,19 @@
-# modules/vectorstore.py
-from __future__ import annotations
-
+# vectorstore.py
 import os
-import shutil
-import sqlite3
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import List, Optional, Iterable
 
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# --- robust local imports (support running as a package or flat files) ---
+# --- robust local imports ---
 try:
     from text_extraction import extract_text
 except ModuleNotFoundError:
     from modules.text_extraction import extract_text  # fallback
 
-_sp_fetch = _sp_ingest_wrap = None
 try:
-    # preferred names as in your repo
     from sharepoint import fetch_files_from_sharepoint as _sp_fetch
     from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
 except ModuleNotFoundError:
@@ -32,199 +26,117 @@ except ModuleNotFoundError:
     except Exception:
         _sp_ingest_wrap = None
 
-# Try to import Chroma Settings (varies by chromadb version)
-try:
-    from chromadb.config import Settings as _ChromaSettings
-except Exception:
-    _ChromaSettings = None
-
-# -------------------- constants --------------------
-DEF_BASE = Path(".")
-EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # same as your previous working setup
-
-# -------------------- path helpers --------------------
-def _vec_root(cfg) -> Path:
-    """
-    Vector root: VECTORSTORE_DIR or BASE_DIR/'vectorstore'.
-    This keeps vector data aligned with your other app data on Azure.
-    """
-    base_dir = Path(getattr(cfg, "BASE_DIR", DEF_BASE))
-    vec_dir = getattr(cfg, "VECTORSTORE_DIR", None)
-    root = Path(vec_dir) if vec_dir else (base_dir / "vectorstore")
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+# --------- defaults ---------
+DEF_BASE = Path(os.getenv("APP_BASE_DIR", "/home/site/wwwroot"))
+DEF_VEC_DIR = DEF_BASE / "vectorstore"
+EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 def _vec_dir_for(cfg, kind: str) -> Path:
-    base = _vec_root(cfg)
-    sub = "uploaded" if kind == "uploaded" else "sharepoint"
-    p = base / sub
+    """Return folder for vector store, ensuring it's Azure-writable."""
+    base = Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR))
+    p = base / ("uploaded" if kind == "uploaded" else "sharepoint")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-# -------------------- backend selection --------------------
-def _sqlite_ver_tuple() -> Tuple[int, int, int]:
-    try:
-        return tuple(int(x) for x in sqlite3.sqlite_version.split("."))
-    except Exception:
-        return (0, 0, 0)
-
-def _make_client_settings(persist_dir: Path):
-    """
-    Decide Chroma backend based on platform capabilities.
-    - If sqlite3 >= 3.35 -> default sqlite (persistent).
-    - Else try duckdb+parquet (persistent).
-    - Else in-memory (non-persistent) so the app keeps working.
-    Returns: (client_settings_or_None, persist_directory_or_None)
-    """
-    ver = _sqlite_ver_tuple()
-
-    # Case 1: modern sqlite available -> default sqlite backend
-    if ver >= (3, 35, 0):
-        if _ChromaSettings:
-            return _ChromaSettings(is_persistent=True, persist_directory=str(persist_dir)), str(persist_dir)
-        # Older chromadb versions may not require client_settings to persist
-        return None, str(persist_dir)
-
-    # Case 2: old sqlite -> try duckdb backend (no sqlite dependency)
-    if _ChromaSettings:
-        try:
-            return _ChromaSettings(
-                is_persistent=True,
-                persist_directory=str(persist_dir),
-                chroma_db_impl="duckdb+parquet",
-            ), str(persist_dir)
-        except Exception:
-            pass
-
-    # Case 3: last resort -> in-memory (no persistence)
-    if _ChromaSettings:
-        try:
-            return _ChromaSettings(is_persistent=False), None
-        except Exception:
-            pass
-
-    return None, None
-
-# -------------------- embeddings & splitter --------------------
-def _embeddings() -> HuggingFaceEmbeddings:
-    # You can switch to OpenAIEmbeddings here if you want a lighter Azure build.
+def _embeddings():
     return HuggingFaceEmbeddings(model_name=EMB_MODEL)
 
-def _text_splitter(cfg) -> RecursiveCharacterTextSplitter:
+def _text_splitter(cfg):
     return RecursiveCharacterTextSplitter(
         chunk_size=getattr(cfg, "CHUNK_SIZE", 1000),
         chunk_overlap=getattr(cfg, "CHUNK_OVERLAP", 120),
-        separators=["\n\n", "\n", " ", ""],
+        separators=["\n\n", "\n", " ", ""]
     )
 
-# -------------------- store factories --------------------
-def _new_chroma(collection: str, persist_path: Path, emb) -> Chroma:
-    client_settings, persist_dir = _make_client_settings(persist_path)
-    # persistent path (sqlite or duckdb)
-    if persist_dir:
-        return Chroma(
-            collection_name=collection,
-            persist_directory=persist_dir,
-            embedding_function=emb,
-            client_settings=client_settings,
-        )
-    # in-memory fallback (no persist directory)
+def _derive_sp_category(path_like: str) -> str:
+    rp = (path_like or "").lower()
+    if "staff augmentation-it professional services" in rp:
+        return "Staff Augmentation-IT Professional Services"
+    return "Other"
+
+def _init_chroma(collection: str, path: Path) -> Chroma:
+    """Initialize Chroma store with DuckDB+Parquet (no sqlite)."""
     return Chroma(
         collection_name=collection,
-        embedding_function=emb,
-        client_settings=client_settings,
+        embedding_function=_embeddings(),
+        persist_directory=str(path),
+        client_settings={"chroma_db_impl": "duckdb+parquet"}
     )
 
 def init_uploaded_store(cfg) -> Chroma:
-    p = _vec_dir_for(cfg, "uploaded")
-    return _new_chroma("uploaded_docs", p, _embeddings())
+    return _init_chroma("uploaded_docs", _vec_dir_for(cfg, "uploaded"))
 
-def init_sharepoint_store(cfg) -> Chroma:
-    p = _vec_dir_for(cfg, "sharepoint")
-    return _new_chroma("sharepoint_docs", p, _embeddings())
-
-# -------------------- maintenance --------------------
-def _wipe_dir(path: Path):
-    try:
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-    finally:
-        path.mkdir(parents=True, exist_ok=True)
+def init_sharepoint_store(cfg) -> Optional[Chroma]:
+    return _init_chroma("sharepoint_docs", _vec_dir_for(cfg, "sharepoint"))
 
 def wipe_up_store(cfg):
-    _wipe_dir(_vec_dir_for(cfg, "uploaded"))
+    p = _vec_dir_for(cfg, "uploaded")
+    if p.exists():
+        for f in p.glob("**/*"):
+            try: f.unlink()
+            except: pass
+        try: p.rmdir()
+        except: pass
 
 def wipe_sp_store(cfg):
-    _wipe_dir(_vec_dir_for(cfg, "sharepoint"))
-
-# -------------------- ingestion --------------------
-def _persist_silent(store: Chroma):
-    try:
-        store.persist()
-    except Exception:
-        # in-memory backend or older chromadb without persist -> ignore
-        pass
+    p = _vec_dir_for(cfg, "sharepoint")
+    if p.exists():
+        for f in p.glob("**/*"):
+            try: f.unlink()
+            except: pass
+        try: p.rmdir()
+        except: pass
 
 def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) -> List[str]:
-    """
-    Extracts text, chunks it, adds to the given Chroma store, and persists if supported.
-    Returns list of successfully ingested file paths.
-    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size, chunk_overlap=120, separators=["\n\n", "\n", " ", ""]
     )
-    added: List[str] = []
+    added = []
     for p in paths:
         try:
             text = extract_text(p)
-            if not text or not text.strip():
+            if not text:
                 continue
             chunks = splitter.split_text(text)
             metadatas = [{"source": p} for _ in chunks]
             store.add_texts(chunks, metadatas=metadatas)
+            store.persist()
             added.append(p)
         except Exception:
             continue
-    _persist_silent(store)
     return added
 
-def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None, include_folder_ids: Optional[List[str]] = None) -> List[str]:
-    """
-    Downloads files from SharePoint via your sharepoint.py helpers, indexes them into Chroma,
-    and returns the list of local file paths that were ingested.
-    """
+def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str]:
+    """Download files from SharePoint and index them into Chroma."""
     if include_exts is None:
         include_exts = ["pdf", "docx", "pptx"]
 
     if _sp_fetch is None and _sp_ingest_wrap is None:
-        raise RuntimeError(
-            "SharePoint fetcher not available. Ensure sharepoint.py is importable "
-            "and exposes fetch_files_from_sharepoint or ingest_sharepoint_files."
-        )
+        raise RuntimeError("SharePoint fetcher not available.")
 
-    # Prefer direct fetch; fall back to wrapper if needed
+    local_files = []
     if _sp_fetch is not None:
-        local_files = _sp_fetch(cfg, include_exts=include_exts, include_folder_ids=include_folder_ids) or []
-    else:
-        local_files = _sp_ingest_wrap(cfg, include_exts=include_exts, include_folder_ids=include_folder_ids) or []
+        local_files = _sp_fetch(cfg, include_exts=include_exts) or []
+    elif _sp_ingest_wrap is not None:
+        local_files = _sp_ingest_wrap(cfg, include_exts=include_exts) or []
 
     if not local_files:
         return []
 
-    store = init_sharepoint_store(cfg)
+    sp_store = init_sharepoint_store(cfg)
     splitter = _text_splitter(cfg)
 
     for local_path in local_files:
         try:
             text = extract_text(local_path)
-            if not text or not text.strip():
+            if not text:
                 continue
             chunks = splitter.split_text(text)
-            # You can extend metadata here (e.g., detected category) if desired.
-            metadatas = [{"source": local_path} for _ in chunks]
-            store.add_texts(chunks, metadatas=metadatas)
+            cat = _derive_sp_category(local_path)
+            metadatas = [{"source": local_path, "sp_category": cat} for _ in chunks]
+            sp_store.add_texts(chunks, metadatas=metadatas)
         except Exception:
             continue
 
-    _persist_silent(store)
+    sp_store.persist()
     return local_files
