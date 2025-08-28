@@ -1,7 +1,7 @@
 # modules/vectorstore.py
 from __future__ import annotations
 from pathlib import Path
-import shutil
+import os, shutil
 from typing import Iterable, List
 
 from langchain_openai import OpenAIEmbeddings
@@ -12,50 +12,67 @@ from langchain_core.documents import Document
 from modules.text_extraction import extract_text
 from modules.sharepoint import ingest_sharepoint_files
 
-
-# --- Singletons ---
+# Singletons
 g_sp_store: DocArrayHnswSearch | None = None
 g_up_store: DocArrayHnswSearch | None = None
 
 
-# --- Internal helpers ---
+# ---------- Embeddings + index helpers ----------
+def _embedding_model_name() -> str:
+    # Allow override via env if you like (Azure App Settings)
+    return os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+
+def _embedding_dim_default() -> int:
+    # Default dims for text-embedding-3-small is 1536; override with EMBEDDING_DIM if needed
+    try:
+        return int(os.getenv("EMBEDDING_DIM", "1536"))
+    except Exception:
+        return 1536
+
+def _make_embeddings() -> OpenAIEmbeddings:
+    # Uses OPENAI_API_KEY from env (Azure App Settings)
+    return OpenAIEmbeddings(model=_embedding_model_name())
+
+def _probe_dim(emb: OpenAIEmbeddings) -> int:
+    # Try to ask the embedding service for a vector and take its length; fall back to default
+    try:
+        v = emb.embed_query("dim probe")
+        if isinstance(v, list) and v:
+            return len(v)
+    except Exception:
+        pass
+    return _embedding_dim_default()
+
 def _store_dir(base_dir: str | Path, name: str) -> Path:
-    """Ensure and return the on-disk folder for the index."""
     p = Path(base_dir) / name
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-def _make_embeddings(model: str | None = None) -> OpenAIEmbeddings:
-    # Uses OPENAI_API_KEY from env; model param is ignored for OpenAIEmbeddings
-    return OpenAIEmbeddings()
-
 def _load_or_init_docarray(base_dir: str | Path, collection: str) -> DocArrayHnswSearch:
-    """Load an existing DocArrayHnswSearch index, or create a new one with a placeholder text."""
     emb = _make_embeddings()
     wd = _store_dir(base_dir, collection)
 
     # Try load existing
     try:
         store = DocArrayHnswSearch.load(str(wd), embeddings=emb)
-        # attach for later saves
         setattr(store, "_work_dir", str(wd))
         return store
     except Exception:
         pass
 
-    # Create minimal new index with an innocuous placeholder
-    store = DocArrayHnswSearch.from_texts([" "], emb, work_dir=str(wd))
+    # Create a new empty index with explicit n_dim (no dependency on a seed embedding call succeeding)
+    n_dim = _probe_dim(emb)
+    store = DocArrayHnswSearch(embedding=emb, work_dir=str(wd), n_dim=n_dim)  # explicit dim
     setattr(store, "_work_dir", str(wd))
     return store
 
 def _save(store: DocArrayHnswSearch):
-    """Persist the index back to disk."""
     wd = getattr(store, "_work_dir", None)
     if wd:
         store.save(wd)
 
 
-# --- Public init entrypoints ---
+# ---------- Public init entrypoints ----------
 def init_sharepoint_store(cfg):
     global g_sp_store
     if g_sp_store is None:
@@ -69,7 +86,7 @@ def init_uploaded_store(cfg):
     return g_up_store
 
 
-# --- Ingestion ---
+# ---------- Ingestion ----------
 def ingest_files(files: Iterable[str], store: DocArrayHnswSearch, chunk_size: int) -> None:
     splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=0)
     docs: List[Document] = []
@@ -81,7 +98,6 @@ def ingest_files(files: Iterable[str], store: DocArrayHnswSearch, chunk_size: in
             text = ""
         if not text.strip():
             continue
-
         for chunk in splitter.split_text(text):
             docs.append(Document(page_content=chunk, metadata={"source": path}))
 
@@ -89,18 +105,18 @@ def ingest_files(files: Iterable[str], store: DocArrayHnswSearch, chunk_size: in
         return
 
     store.add_documents(docs)
-    _save(store)  # persist after adding docs
+    _save(store)
 
 def ingest_sharepoint(cfg, include_exts=None, include_folder_ids=None):
     files = ingest_sharepoint_files(cfg, include_exts=include_exts, include_folder_ids=include_folder_ids)
     if not files:
         return []
     sp_store = init_sharepoint_store(cfg)
-    ingest_files(files, sp_store, cfg.CHUNK_SIZE)  # _save() happens inside
+    ingest_files(files, sp_store, cfg.CHUNK_SIZE)
     return files
 
 
-# --- Maintenance ---
+# ---------- Maintenance ----------
 def _wipe_dir(path: Path):
     try:
         if path.exists():
