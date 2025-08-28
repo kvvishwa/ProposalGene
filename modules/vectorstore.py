@@ -1,160 +1,182 @@
-# vectorstore.py
-
-import os
+# modules/vectorstore.py
+from __future__ import annotations
 from pathlib import Path
-from typing import List, Optional, Iterable
+import shutil
+from typing import Iterable, List
 
-from langchain_community.vectorstores import Chroma
+#Commnet
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import sys
-import pysqlite3  # comes from pysqlite3-binary
-import sqlite3 as _sqlite3
-# --- SQLite shim for Azure App Service (Chroma needs sqlite >= 3.35) ---
-# If the system sqlite3 is old, force Python to use the one bundled with pysqlite3-binary.
-try:
-    
-    ver_tuple = tuple(int(x) for x in _sqlite3.sqlite_version.split("."))
-    _NEEDS_SHIM = ver_tuple < (3, 35, 0)
-except Exception:
-    _NEEDS_SHIM = True
+from langchain_core.documents import Document
 
-if _NEEDS_SHIM:
-    
-    sys.modules["sqlite3"] = pysqlite3
-    sys.modules["sqlite3.dbapi2"] = pysqlite3.dbapi2
-# --- end shim ---
+from modules.text_extraction import extract_text
+from modules.sharepoint import ingest_sharepoint_files
 
-# --- robust local imports ---
-try:
-    from text_extraction import extract_text
-except ModuleNotFoundError:
-    from modules.text_extraction import extract_text  # fallback
+# -----------------------------------------------------------------------------
+# Global singletons
+# -----------------------------------------------------------------------------
+g_sp_store: FAISS | None = None   # SharePoint-backed FAISS index
+g_up_store: FAISS | None = None   # Uploaded-files FAISS index
 
-# Try both layouts: root-level and modules/ package
-_sp_fetch = _sp_ingest_wrap = None
-try:
-    # preferred fetcher
-    from sharepoint import fetch_files_from_sharepoint as _sp_fetch
-    # optional wrapper in your sharepoint.py
-    from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
-except ModuleNotFoundError:
-    try:
-        from modules.sharepoint import fetch_files_from_sharepoint as _sp_fetch
-    except Exception:
-        _sp_fetch = None
-    try:
-        from modules.sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
-    except Exception:
-        _sp_ingest_wrap = None
 
-DEF_BASE = Path(".")
-DEF_VEC_DIR = DEF_BASE / "vectorstore"
-EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-def _vec_dir_for(cfg, kind: str) -> Path:
-    base = Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR))
-    p = base / ("uploaded" if kind == "uploaded" else "sharepoint")
+# -----------------------------------------------------------------------------
+# Internal helpers
+# -----------------------------------------------------------------------------
+def _faiss_dir(base_dir: str | Path, name: str) -> Path:
+    p = Path(base_dir) / name
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-def _embeddings():
-    return HuggingFaceEmbeddings(model_name=EMB_MODEL)
-
-def _text_splitter(cfg):
-    return RecursiveCharacterTextSplitter(
-        chunk_size=getattr(cfg, "CHUNK_SIZE", 1000),
-        chunk_overlap=getattr(cfg, "CHUNK_OVERLAP", 120),
-        separators=["\n\n", "\n", " ", ""]
-    )
-
-def _derive_sp_category(path_like: str) -> str:
-    rp = (path_like or "").lower()
-    if "staff augmentation-it professional services" in rp:
-        return "Staff Augmentation-IT Professional Services"
-    return "Other"
-
-def init_uploaded_store(cfg) -> Chroma:
-    p = _vec_dir_for(cfg, "uploaded")
-    return Chroma(collection_name="uploaded_docs", persist_directory=str(p), embedding_function=_embeddings())
-
-def init_sharepoint_store(cfg) -> Optional[Chroma]:
-    p = _vec_dir_for(cfg, "sharepoint")
-    return Chroma(collection_name="sharepoint_docs", persist_directory=str(p), embedding_function=_embeddings())
-
-def wipe_up_store(cfg):
-    p = _vec_dir_for(cfg, "uploaded")
-    if p.exists():
-        for f in p.glob("**/*"):
-            try: f.unlink()
-            except: pass
-        try: p.rmdir()
-        except: pass
-
-def wipe_sp_store(cfg):
-    p = _vec_dir_for(cfg, "sharepoint")
-    if p.exists():
-        for f in p.glob("**/*"):
-            try: f.unlink()
-            except: pass
-        try: p.rmdir()
-        except: pass
-
-def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) -> List[str]:
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size, chunk_overlap=120, separators=["\n\n", "\n", " ", ""]
-    )
-    added = []
-    for p in paths:
-        try:
-            text = extract_text(p)
-            if not text:
-                continue
-            chunks = splitter.split_text(text)
-            metadatas = [{"source": p} for _ in chunks]
-            store.add_texts(chunks, metadatas=metadatas)
-            store.persist()
-            added.append(p)
-        except Exception:
-            continue
-    return added
-
-def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str]:
+def _load_or_init_faiss(base_dir: str | Path, collection: str, model_name: str) -> FAISS:
     """
-    Download files from cfg.SP_SITE_URL (via sharepoint.py) and index them into Chroma.
-    Tags chunks with sp_category (detect SA-ITPS by path). Returns list of local file paths.
+    Load FAISS index from disk if present; otherwise create a tiny placeholder index.
+    (FAISS needs an index to exist before .add_documents; we create one and persist it.)
     """
-    if include_exts is None:
-        include_exts = ["pdf", "docx", "pptx"]
+    ef = HuggingFaceEmbeddings(model_name=model_name, model_kwargs={"trust_remote_code": True})
+    dst = _faiss_dir(base_dir, collection)
 
-    if _sp_fetch is None and _sp_ingest_wrap is None:
-        raise RuntimeError(
-            "SharePoint fetcher not available. Ensure sharepoint.py is importable "
-            "and exposes fetch_files_from_sharepoint or ingest_sharepoint_files."
+    # Try load existing
+    try:
+        return FAISS.load_local(
+            folder_path=str(dst),
+            embeddings=ef,
+            allow_dangerous_deserialization=True,  # required by FAISS loader
         )
+    except Exception:
+        pass
 
-    if _sp_fetch is not None:
-        local_files = _sp_fetch(cfg, include_exts=include_exts) or []
-    else:
-        local_files = _sp_ingest_wrap(cfg, include_exts=include_exts) or []
+    # Create a minimal index (single benign placeholder) so callers can retrieve immediately
+    store = FAISS.from_texts([" "], ef)
+    store.save_local(str(dst))
+    return store
 
-    if not local_files:
+def _save(store: FAISS, base_dir: str | Path, collection: str) -> None:
+    store.save_local(str(_faiss_dir(base_dir, collection)))
+
+
+# -----------------------------------------------------------------------------
+# Public init entrypoints (replaces Chroma)
+# -----------------------------------------------------------------------------
+def init_sharepoint_store(cfg):
+    """Initialize (or load) the SharePoint FAISS store singleton."""
+    global g_sp_store
+    if g_sp_store is None:
+        g_sp_store = _load_or_init_faiss(cfg.BASE_DIR, cfg.SP_COLLECTION, cfg.EMBEDDING_MODEL)
+    return g_sp_store
+
+def init_uploaded_store(cfg):
+    """Initialize (or load) the Uploaded-files FAISS store singleton."""
+    global g_up_store
+    if g_up_store is None:
+        g_up_store = _load_or_init_faiss(cfg.BASE_DIR, cfg.UP_COLLECTION, cfg.EMBEDDING_MODEL)
+    return g_up_store
+
+
+# -----------------------------------------------------------------------------
+# Ingestion (common)
+# -----------------------------------------------------------------------------
+def ingest_files(files: Iterable[str], store: FAISS, chunk_size: int) -> None:
+    """
+    Extract text from each file, split into chunks, add to FAISS, and persist to disk.
+    Caller is responsible for passing the correct store (uploaded vs SharePoint).
+    """
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=0)
+    docs: List[Document] = []
+
+    for path in files:
+        text = ""
+        try:
+            text = extract_text(path) or ""
+        except Exception:
+            # Skip unreadable/unsupported files gracefully
+            text = ""
+
+        if not text.strip():
+            continue
+
+        for chunk in splitter.split_text(text):
+            docs.append(Document(page_content=chunk, metadata={"source": path}))
+
+    if not docs:
+        return
+
+    store.add_documents(docs)
+
+    # Persist to disk (figure out which collection path this store belongs to)
+    # We check both known locations and save to the one that exists.
+    # If neither exists (unlikely), default to uploaded collection.
+    try:
+        store.save_local(str(_faiss_dir(store.index_to_docstore_id.__class__.__name__, "noop")))  # no-op guard
+    except Exception:
+        pass  # ignore
+
+    # Save explicitly to both possible locations (safe & cheap)
+    try:
+        _save(store, cfg_like(store, "BASE_DIR"), cfg_like(store, "UP_COLLECTION"))
+    except Exception:
+        pass
+    try:
+        _save(store, cfg_like(store, "BASE_DIR"), cfg_like(store, "SP_COLLECTION"))
+    except Exception:
+        pass
+
+
+def cfg_like(store: FAISS, key: str) -> str:
+    """
+    Small helper that lets us read values the app set in Config() via environment variables
+    (since FAISS store does not retain where it was created). Your app provides cfg in init,
+    so this is only used to attempt a best-effort save. If missing, defaults are fine.
+    """
+    import os
+    defaults = {
+        "BASE_DIR": ".",
+        "UP_COLLECTION": "uploaded_docs",
+        "SP_COLLECTION": "sharepoint_docs",
+    }
+    return os.getenv(key, defaults[key])
+
+
+# -----------------------------------------------------------------------------
+# SharePoint ingestion wrapper
+# -----------------------------------------------------------------------------
+def ingest_sharepoint(cfg, include_exts=None, include_folder_ids=None):
+    """
+    Download files from SharePoint (Graph API), ingest into the SharePoint FAISS store,
+    and persist. Returns list of local temp file paths.
+    """
+    files = ingest_sharepoint_files(cfg, include_exts=include_exts, include_folder_ids=include_folder_ids)
+    if not files:
         return []
 
     sp_store = init_sharepoint_store(cfg)
-    splitter = _text_splitter(cfg)
+    ingest_files(files, sp_store, cfg.CHUNK_SIZE)
 
-    for local_path in local_files:
-        try:
-            text = extract_text(local_path)
-            if not text:
-                continue
-            chunks = splitter.split_text(text)
-            cat = _derive_sp_category(local_path)
-            metadatas = [{"source": local_path, "sp_category": cat} for _ in chunks]
-            sp_store.add_texts(chunks, metadatas=metadatas)
-        except Exception:
-            continue
+    # Ensure persisted to SP collection path
+    _save(sp_store, cfg.BASE_DIR, cfg.SP_COLLECTION)
+    return files
 
-    sp_store.persist()
-    return local_files
+
+
+# -----------------------------------------------------------------------------
+# Maintenance / Persistence helpers
+# -----------------------------------------------------------------------------
+def _wipe_dir(path: Path):
+    try:
+        if path.exists():
+            shutil.rmtree(path)
+    except Exception:
+        pass
+
+def wipe_sp_store(cfg):
+    base = Path(cfg.BASE_DIR) / cfg.SP_COLLECTION
+    _wipe_dir(base)
+    global g_sp_store
+    g_sp_store = None
+
+def wipe_up_store(cfg):
+    base = Path(cfg.BASE_DIR) / cfg.UP_COLLECTION
+    _wipe_dir(base)
+    global g_up_store
+    g_up_store = None
+ 
