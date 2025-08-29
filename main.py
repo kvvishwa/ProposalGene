@@ -214,7 +214,7 @@ with tab_understanding:
             ss.up_store = init_uploaded_store(cfg); progress_text = st.empty(); progress_bar = st.progress(0.0); n_files = len(new_files)
             with st.spinner("Vectorizing uploaded documents…"):
                 for i, path in enumerate(new_files, 1):
-                    ingest_files([path], ss.up_store, getattr(cfg, "CHUNK_SIZE", 1000))
+                    ingest_files([path], ss.up_store, getattr(cfg, "CHUNK_SIZE", 1000), kind="uploaded")
                     progress_bar.progress(i / n_files); progress_text.write(f"Processed {i} of {n_files} files")
             progress_bar.empty(); progress_text.empty()
             ss.vectorized = True; ss.temp_files.extend(new_files)
