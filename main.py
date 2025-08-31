@@ -99,6 +99,11 @@ try:
 except Exception as e:
     print("SQLite import failed:", e)
 
+#------------
+def _fmt_why(ev: dict) -> str:
+    v = ev.get("why_relevant")
+    return f" — {v}" if v else ""
+
 # ---------- safe_expander to avoid nested expanders ----------
 @contextmanager
 def safe_expander(label: str, **kwargs):
@@ -158,7 +163,7 @@ with tab_chat_sp:
                     src = e.source + (f" {e.page_hint}" if e.page_hint else "")
                     if e.source and e.source not in uniq_sources:
                         uniq_sources.append(e.source)
-                    why = f" — {e.why_relevant}" if e.why_relevant else ""
+                    why = _fmt_why(e)
                     numbered.append(f"[{i}] {e.text}\n(Source: {src}{why})")
                 context = "\n\n".join(numbered)[:8000]
 
@@ -213,7 +218,7 @@ with tab_chat_sp:
                         with safe_expander("Show evidence used", expanded=False):
                             for j, ev in enumerate(turn["evidence"], start=1):
                                 src = ev.get("source",""); page = (" " + ev["page_hint"]) if ev.get("page_hint") else ""
-                                why = f" — {ev.get('why_relevant','')}" if ev.get("why_relevant") else ""
+                                why = _fmt_why(ev)
                                 st.markdown(f"**[{j}]** `{src}{page}`{why}")
                                 st.code(ev.get("text","")[:1200], language="text")
 
@@ -320,7 +325,7 @@ with tab_understanding:
                             with safe_expander("Show evidence used", expanded=False):
                                 for j, ev in enumerate(turn["evidence"], start=1):
                                     src = ev.get("source",""); page = (" " + ev["page_hint"]) if ev.get("page_hint") else ""
-                                    why = f" — {ev.get("why_relevant","")}" if ev.get("why_relevant") else ""
+                                    why = _fmt_why(ev)
                                     st.markdown(f"**[{j}]** `{src}{page}`{why}")
                                     st.code(ev.get("text","")[:1200], language="text")
 
@@ -340,7 +345,7 @@ with tab_understanding:
                             src = e.source + (f" {e.page_hint}" if e.page_hint else "")
                             if e.source and e.source not in uniq_sources:
                                 uniq_sources.append(e.source)
-                            why = f" — {e.why_relevant}" if e.why_relevant else ""
+                            why = _fmt_why(ev)
                             numbered.append(f"[{i}] {e.text}\n(Source: {src}{why})")
                         context = "\n\n".join(numbered)[:8000]
                         prompt = (
@@ -531,7 +536,7 @@ with tab_generation:
                         with safe_expander(f"Show retrieval diagnostics — {sec_name}", expanded=False):
                             for i, ev in enumerate(pkg["evidence"], start=1):
                                 src = ev.get("source",""); page = (" " + ev["page_hint"]) if ev.get("page_hint") else ""
-                                why = f" — {ev.get('why_relevant','')}" if ev.get("why_relevant") else ""
+                                why = _fmt_why(ev)
                                 st.markdown(f"**[{i}]** `{src}{page}`{why}"); st.code(ev.get("text","")[:1200], language="text")
                     if pkg.get("sources"): st.caption("Sources: " + ", ".join(pkg["sources"]))
                     all_md.append(f"## {sec_name}\n\n{pkg['md']}\n")
