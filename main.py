@@ -92,12 +92,27 @@ tab_chat_sp, tab_understanding, tab_generation, tab_settings = st.tabs(
 )
 
 # ---------- SQLite Sanity Check ----------
+# --- SQLite backport for Chroma on older Azure images ---
+# Place this block RIGHT AFTER your "from __future__ import annotations" line.
 try:
-    import sqlite3
-    import platform
-    print("SQLite OK | Python:", platform.python_version(), "| SQLite lib ver:", sqlite3.sqlite_version)
-except Exception as e:
-    print("SQLite import failed:", e)
+    import sqlite3 as _stdlib_sqlite
+    def _vtuple(v: str):
+        try:
+            return tuple(int(x) for x in v.split(".")[:3])
+        except Exception:
+            return (0, 0, 0)
+    if _vtuple(getattr(_stdlib_sqlite, "sqlite_version", "0.0.0")) < (3, 35, 0):
+        import sys
+        import pysqlite3 as _pysqlite3  
+        sys.modules["sqlite3"] = _pysqlite3  # swap in newer SQLite
+        import sqlite3  # re-import resolves to pysqlite3 now
+        print("SQLite patched via pysqlite3:", sqlite3.sqlite_version)
+    else:
+        print("System SQLite is new enough:", _stdlib_sqlite.sqlite_version)
+except Exception as _e:
+    print("SQLite backport not applied:", _e)
+# --- end patch ---
+
 
 #------------
 def _fmt_why(ev: dict) -> str:
