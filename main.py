@@ -595,7 +595,7 @@ with tab_settings:
                 val = st.session_state.get(f"map_{sec}", "(none)"); static_map_now[sec] = "" if val == "(none)" else val
             save_static_map(STATIC_MAP_FILE, static_map_now); st.success("Static section mapping saved.")
 
-        st.markdown("---"); st.markrough("##### Proposal Templates (.docx)")  # typo fix optional: replace with st.markdown
+        st.markdown("---"); st.markdown("##### Proposal Templates (.docx)")  # typo fix optional: replace with st.markdown
         tpl_upload = st.file_uploader("Upload a proposal template (.docx)", type=["docx"], accept_multiple_files=False)
         if tpl_upload and st.button("Save Template"):
             out = TEMPLATE_DIR / tpl_upload.name; out.write_bytes(tpl_upload.getvalue()); st.success(f"Saved template: {tpl_upload.name}")
