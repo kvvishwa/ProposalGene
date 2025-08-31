@@ -1,226 +1,143 @@
-# modules/vectorstore.py
-from __future__ import annotations
+# vectorstore.py
 
 import os
-import shutil
-import pickle
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional, Iterable
 
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_core.documents import Document
 
-# ---------- robust local imports (flat or package) ----------
+# --- robust local imports ---
 try:
     from text_extraction import extract_text
 except ModuleNotFoundError:
     from modules.text_extraction import extract_text  # fallback
 
-# We support either helper name exposed by your sharepoint.py
+# Try both layouts: root-level and modules/ package
+_sp_fetch = _sp_ingest_wrap = None
 try:
+    # preferred fetcher
     from sharepoint import fetch_files_from_sharepoint as _sp_fetch
+    # optional wrapper in your sharepoint.py
+    from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
 except ModuleNotFoundError:
     try:
         from modules.sharepoint import fetch_files_from_sharepoint as _sp_fetch
     except Exception:
         _sp_fetch = None
-
-try:
-    from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
-except ModuleNotFoundError:
     try:
         from modules.sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
     except Exception:
         _sp_ingest_wrap = None
 
-
-# ============================ Paths & Embeddings ============================
-
-def _base_dir(cfg) -> Path:
-    """
-    Writable base dir on Azure:
-      1) env BASE_DIR
-      2) cfg.BASE_DIR
-      3) /home/site/wwwroot/data (Azure)
-    """
-    env_base = os.getenv("BASE_DIR")
-    if env_base:
-        p = Path(env_base)
-    else:
-        p = Path(getattr(cfg, "BASE_DIR", "/home/site/wwwroot/data"))
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-def _vec_root(cfg) -> Path:
-    root = _base_dir(cfg) / "vectorstore_faiss"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+DEF_BASE = Path(".")
+DEF_VEC_DIR = DEF_BASE / "vectorstore"
+EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 def _vec_dir_for(cfg, kind: str) -> Path:
-    """kind = 'uploaded' | 'sharepoint'"""
-    sub = "uploaded" if kind == "uploaded" else "sharepoint"
-    p = _vec_root(cfg) / sub
+    base = Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR))
+    p = base / ("uploaded" if kind == "uploaded" else "sharepoint")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-def _faiss_paths(folder: Path):
-    index_path = folder / "faiss.index"
-    store_path = folder / "docstore.pkl"
-    return index_path, store_path
+def _embeddings():
+    return HuggingFaceEmbeddings(model_name=EMB_MODEL)
 
-def _embeddings() -> OpenAIEmbeddings:
-    # No Torch. Set OPENAI_API_KEY in App Settings.
-    model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    return OpenAIEmbeddings(model=model)
-
-def _splitter(chunk_size: int, chunk_overlap: int = 120) -> RecursiveCharacterTextSplitter:
+def _text_splitter(cfg):
     return RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap,
-        separators=["\n\n", "\n", " ", ""],
+        chunk_size=getattr(cfg, "CHUNK_SIZE", 1000),
+        chunk_overlap=getattr(cfg, "CHUNK_OVERLAP", 120),
+        separators=["\n\n", "\n", " ", ""]
     )
 
+def _derive_sp_category(path_like: str) -> str:
+    rp = (path_like or "").lower()
+    if "staff augmentation-it professional services" in rp:
+        return "Staff Augmentation-IT Professional Services"
+    return "Other"
 
-# ============================ Save / Load ============================
+def init_uploaded_store(cfg) -> Chroma:
+    p = _vec_dir_for(cfg, "uploaded")
+    return Chroma(collection_name="uploaded_docs", persist_directory=str(p), embedding_function=_embeddings())
 
-def _load_faiss(folder: Path) -> Optional[FAISS]:
-    emb = _embeddings()
-    try:
-        # LangChain FAISS supports folder-level save/load
-        return FAISS.load_local(
-            folder_path=str(folder),
-            embeddings=emb,
-            allow_dangerous_deserialization=True,
-        )
-    except Exception:
-        # Fall back to manual check for legacy files then let create path
-        index_path, store_path = _faiss_paths(folder)
-        if index_path.exists() and store_path.exists():
-            try:
-                return FAISS.load_local(
-                    folder_path=str(folder),
-                    embeddings=emb,
-                    allow_dangerous_deserialization=True,
-                )
-            except Exception:
-                return None
-    return None
-
-def _save_faiss(store: FAISS, folder: Path) -> None:
-    try:
-        store.save_local(str(folder))
-    except Exception:
-        pass
-
-
-# ============================ Singletons ============================
-
-_g_up: Optional[FAISS] = None
-_g_sp: Optional[FAISS] = None
-
-def init_uploaded_store(cfg) -> FAISS:
-    global _g_up
-    folder = _vec_dir_for(cfg, "uploaded")
-    if _g_up is None:
-        _g_up = _load_faiss(folder)
-        if _g_up is None:
-            # Seed an empty index so .add_documents works immediately
-            _g_up = FAISS.from_texts([" "], _embeddings())
-            _save_faiss(_g_up, folder)
-    return _g_up
-
-def init_sharepoint_store(cfg) -> FAISS:
-    global _g_sp
-    folder = _vec_dir_for(cfg, "sharepoint")
-    if _g_sp is None:
-        _g_sp = _load_faiss(folder)
-        if _g_sp is None:
-            _g_sp = FAISS.from_texts([" "], _embeddings())
-            _save_faiss(_g_sp, folder)
-    return _g_sp
-
-
-# ============================ Maintenance ============================
-
-def _wipe_dir(path: Path):
-    try:
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-    finally:
-        path.mkdir(parents=True, exist_ok=True)
+def init_sharepoint_store(cfg) -> Optional[Chroma]:
+    p = _vec_dir_for(cfg, "sharepoint")
+    return Chroma(collection_name="sharepoint_docs", persist_directory=str(p), embedding_function=_embeddings())
 
 def wipe_up_store(cfg):
-    global _g_up
-    _wipe_dir(_vec_dir_for(cfg, "uploaded"))
-    _g_up = None
+    p = _vec_dir_for(cfg, "uploaded")
+    if p.exists():
+        for f in p.glob("**/*"):
+            try: f.unlink()
+            except: pass
+        try: p.rmdir()
+        except: pass
 
 def wipe_sp_store(cfg):
-    global _g_sp
-    _wipe_dir(_vec_dir_for(cfg, "sharepoint"))
-    _g_sp = None
+    p = _vec_dir_for(cfg, "sharepoint")
+    if p.exists():
+        for f in p.glob("**/*"):
+            try: f.unlink()
+            except: pass
+        try: p.rmdir()
+        except: pass
 
-
-# ============================ Ingestion ============================
-
-def ingest_files(paths: Iterable[str], store: FAISS, chunk_size: int, kind: str = "uploaded") -> List[str]:
-    """
-    NOTE: Signature matches your main.py (3rd arg = chunk_size).
-    kind: "uploaded" (default) or "sharepoint" controls save location.
-    """
-    sp = _splitter(chunk_size)
-    docs: List[Document] = []
-    added: List[str] = []
-
-    for pth in paths:
+def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) -> List[str]:
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=120, separators=["\n\n", "\n", " ", ""]
+    )
+    added = []
+    for p in paths:
         try:
-            txt = extract_text(pth) or ""
-            if not txt.strip():
+            text = extract_text(p)
+            if not text:
                 continue
-            for chunk in sp.split_text(txt):
-                docs.append(Document(page_content=chunk, metadata={"source": pth}))
-            added.append(pth)
+            chunks = splitter.split_text(text)
+            metadatas = [{"source": p} for _ in chunks]
+            store.add_texts(chunks, metadatas=metadatas)
+            store.persist()
+            added.append(p)
         except Exception:
             continue
-
-    if docs:
-        store.add_documents(docs)
-        folder = _vec_dir_for(_CfgProxy(), kind)  # persist using env defaults if cfg not handy
-        _save_faiss(store, folder)
-
     return added
 
-
-def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None, include_folder_ids: Optional[List[str]] = None) -> List[str]:
+def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str]:
     """
-    Downloads files from SharePoint via sharepoint.py and indexes them into the SharePoint FAISS store.
+    Download files from cfg.SP_SITE_URL (via sharepoint.py) and index them into Chroma.
+    Tags chunks with sp_category (detect SA-ITPS by path). Returns list of local file paths.
     """
     if include_exts is None:
         include_exts = ["pdf", "docx", "pptx"]
 
     if _sp_fetch is None and _sp_ingest_wrap is None:
-        raise RuntimeError("SharePoint fetcher not available (sharepoint.py not importable).")
+        raise RuntimeError(
+            "SharePoint fetcher not available. Ensure sharepoint.py is importable "
+            "and exposes fetch_files_from_sharepoint or ingest_sharepoint_files."
+        )
 
     if _sp_fetch is not None:
-        files = _sp_fetch(cfg, include_exts=include_exts, include_folder_ids=include_folder_ids) or []
+        local_files = _sp_fetch(cfg, include_exts=include_exts) or []
     else:
-        files = _sp_ingest_wrap(cfg, include_exts=include_exts, include_folder_ids=include_folder_ids) or []
+        local_files = _sp_ingest_wrap(cfg, include_exts=include_exts) or []
 
-    if not files:
+    if not local_files:
         return []
 
-    store = init_sharepoint_store(cfg)
-    _ = ingest_files(files, store, getattr(cfg, "CHUNK_SIZE", 1000), kind="sharepoint")
-    return files
+    sp_store = init_sharepoint_store(cfg)
+    splitter = _text_splitter(cfg)
 
+    for local_path in local_files:
+        try:
+            text = extract_text(local_path)
+            if not text:
+                continue
+            chunks = splitter.split_text(text)
+            cat = _derive_sp_category(local_path)
+            metadatas = [{"source": local_path, "sp_category": cat} for _ in chunks]
+            sp_store.add_texts(chunks, metadatas=metadatas)
+        except Exception:
+            continue
 
-# ============================ Tiny cfg proxy ============================
-
-class _CfgProxy:
-    """
-    Used only by ingest_files() when it needs a save path but the caller passed no cfg.
-    Reads env vars to find the same folders your app uses.
-    """
-    def __init__(self):
-        self.BASE_DIR = os.getenv("BASE_DIR", "/home/site/wwwroot/data")
+    sp_store.persist()
+    return local_files

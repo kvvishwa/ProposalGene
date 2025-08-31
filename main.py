@@ -36,7 +36,7 @@ from modules.understanding_extractor import extract_rfp_facts, extract_rfp_facts
 from modules.proposal_builder import BuildOptions, build_proposal
 from modules.sp_retrieval import get_sp_evidence_for_question, get_store_evidence  # NEW
 
-st.set_page_config(page_title="BCT Proposal Studio", layout="wide", page_icon="📄")
+st.set_page_config(page_title="📄 Proposal Studio", layout="wide", page_icon="📄")
 st.markdown("""
 <style>
 .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
@@ -47,7 +47,7 @@ section[data-testid="stChatMessage"] { margin-bottom: .35rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("BCT Proposal Studio")
+st.title("📄 Proposal Studio")
 cfg = load_config()
 oai = OpenAI(api_key=cfg.OPENAI_API_KEY)
 
@@ -87,6 +87,17 @@ TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 tab_chat_sp, tab_understanding, tab_generation, tab_settings = st.tabs(
     ["Chat (SharePoint DB)", "Proposal Understanding", "Proposal Generation", "Settings"]
 )
+
+
+# SQLite Sanity Check
+
+try:
+    import sqlite3
+    import platform
+    print("SQLite OK | Python:", platform.python_version(), "| SQLite lib ver:", sqlite3.sqlite_version)
+except Exception as e:
+    print("SQLite import failed:", e)
+
 
 # ================= Chat (SharePoint DB) =================
 with tab_chat_sp:
@@ -214,7 +225,7 @@ with tab_understanding:
             ss.up_store = init_uploaded_store(cfg); progress_text = st.empty(); progress_bar = st.progress(0.0); n_files = len(new_files)
             with st.spinner("Vectorizing uploaded documents…"):
                 for i, path in enumerate(new_files, 1):
-                    ingest_files([path], ss.up_store, getattr(cfg, "CHUNK_SIZE", 1000), kind="uploaded")
+                    ingest_files([path], ss.up_store, getattr(cfg, "CHUNK_SIZE", 1000))
                     progress_bar.progress(i / n_files); progress_text.write(f"Processed {i} of {n_files} files")
             progress_bar.empty(); progress_text.empty()
             ss.vectorized = True; ss.temp_files.extend(new_files)
@@ -366,11 +377,7 @@ with tab_understanding:
                     static_paths = {sec: str((STATIC_DIR / static_map_now[sec]).resolve()) for sec in available_static if static_map_now.get(sec)}
                     opts = BuildOptions(use_anchors=True, template_has_headings=True, page_breaks=True, include_sources=True, add_toc=True,
                                         rec_style="bullets", top_k_default=6, top_k_per_section=0, tone="Professional",
-                                        static_heading_mode="demote", facts=ss.rfp_facts or {},honor_final_order_over_anchors=True,  # keep sequence no matter where anchors live
-                                static_copy_mode="textonly",          # avoid “unreadable content” corruption
-                                force_dynamic_heading=True,
-                                dynamic_heading_level=1,
-                                )
+                                        static_heading_mode="demote", facts=ss.rfp_facts or {})
                     with st.spinner("Generating draft from current facts & template…"):
                         draft_bytes, recs_bytes, preview, meta = build_proposal(template_path=template_path, static_paths=static_paths,
                                                                                final_order=final_order, oai=oai, cfg=cfg, opts=opts)
@@ -476,11 +483,7 @@ with tab_generation:
             opts = BuildOptions(use_anchors=ss.gen_use_anchors, template_has_headings=ss.gen_tpl_has_headings, page_breaks=ss.gen_page_breaks,
                                 include_sources=ss.gen_include_sources, add_toc=ss.gen_add_toc, rec_style=ss.gen_rec_style,
                                 top_k_default=int(ss.gen_top_k), top_k_per_section=int(ss.gen_per_section_k), tone="Professional",
-                                static_heading_mode="demote", facts=ss.rfp_facts or {},honor_final_order_over_anchors=True,  # keep sequence no matter where anchors live
-                                static_copy_mode="textonly",          # avoid “unreadable content” corruption
-                                force_dynamic_heading=True,
-                                dynamic_heading_level=1,
-                                )
+                                static_heading_mode="demote", facts=ss.rfp_facts or {})
             with st.spinner("Composing draft and recommendations…"):
                 draft_bytes, recs_bytes, preview, meta = build_proposal(template_path=template_path, static_paths=static_paths,
                                                                        final_order=final_order, oai=oai, cfg=cfg, opts=opts)

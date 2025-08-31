@@ -2,8 +2,8 @@
 # -----------------------------------------------------------------------------
 # Build the final proposal document:
 # - Merge a DOCX template with static sections and dynamic (AI) sections
-# - Honor anchors (but keep final_order sequence via a moving cursor)
-# - Insert headings correctly (style-aware)
+# - Honor anchors (content controls/bookmarks/marker text)
+# - Insert headings correctly (style-aware) and preserve template formatting
 # - Optional TOC, page breaks, and sources line
 # -----------------------------------------------------------------------------
 
@@ -26,7 +26,7 @@ from modules.docx_generator import (
     find_anchor_paragraph,
     add_sources_line,
     normalize_static_section_heading,
-    insert_paragraph_after,
+    insert_paragraph_after,   # NEW: OXML-based insert
 )
 from modules.sp_retrieval import get_sp_evidence
 from modules.utils import safe_read_docx
@@ -48,14 +48,10 @@ class BuildOptions:
     static_heading_mode: str = "demote"    # 'keep' | 'demote' | 'strip'
     facts: dict = field(default_factory=dict)
 
-    # NEW: ordering & robustness
-    honor_final_order_over_anchors: bool = True   # keep sequence even if anchor lives earlier in the doc
-    static_copy_mode: str = "textsmart"            # "textonly" (safe) | "deepcopy" (fast, risky)
-
     # Dynamic heading behavior
-    force_dynamic_heading: bool = True
-    dynamic_heading_level: int = 1
-    dynamic_heading_style_name: Optional[str] = None
+    force_dynamic_heading: bool = True # force insert a heading for dynamic sections regardless
+    dynamic_heading_level: int = 1         # 1..6
+    dynamic_heading_style_name: Optional[str] = None  # e.g., "Heading 2"
 
 
 # ---------------------------- Utilities ----------------------------
@@ -63,11 +59,13 @@ class BuildOptions:
 _HEADING_STYLE_PREFIX = "Heading "
 
 def _best_heading_style(doc: _Doc, level: int, override: Optional[str]) -> str:
+    """Return a valid heading style present in doc."""
     if override and override in doc.styles:
         return override
     candidate = f"{_HEADING_STYLE_PREFIX}{max(1, min(6, level))}"
     if candidate in doc.styles:
         return candidate
+    # Fallbacks
     for name in [candidate, "Heading1", "Heading 1", "Title"]:
         if name in doc.styles:
             return name
@@ -85,83 +83,87 @@ def _is_heading(p: Paragraph) -> bool:
         return False
 
 
-def _para_index(doc: _Doc, p: Paragraph) -> int:
-    """Safe index lookup (returns very large number when not found)."""
-    try:
-        return doc.paragraphs.index(p)
-    except Exception:
-        return 10**9
-
-
-def _ensure_heading_at_anchor_or_end(base_doc: _Doc, label: str, cursor_idx: int, opts: BuildOptions) -> Paragraph:
+def _ensure_heading_at_anchor(base_doc: _Doc, label: str, opts: BuildOptions) -> Paragraph:
     """
-    Ensure we have a heading paragraph for the dynamic label, placed *not before* cursor_idx.
-    If anchor exists *after or equal* to cursor_idx → use it (insert heading there if needed).
-    Otherwise → append at end (after cursor), create heading there.
+    Ensure there's a visible heading paragraph for this dynamic label.
+    If the anchor paragraph isn't a heading, we insert a heading just *after* the anchor.
+    Returns the heading paragraph to which content should be appended.
     """
-    anchor_p = find_anchor_paragraph(base_doc, label) if opts.use_anchors else None
-    use_anchor = False
-    if anchor_p is not None:
-        aidx = _para_index(base_doc, anchor_p)
-        if not opts.honor_final_order_over_anchors or aidx >= cursor_idx:
-            use_anchor = True
+    anchor_p = find_anchor_paragraph(base_doc, label)
+    if anchor_p is None:
+        # No anchor → append at end, create heading there
+        if opts.page_breaks:
+            add_page_break(base_doc)
+        hstyle = _best_heading_style(base_doc, opts.dynamic_heading_level, opts.dynamic_heading_style_name)
+        return add_heading_paragraph(base_doc, label, style_name=hstyle)
 
-    if use_anchor:
-        if _is_heading(anchor_p):
-            heading_p = anchor_p
-        else:
-            hstyle = _best_heading_style(base_doc, opts.dynamic_heading_level, opts.dynamic_heading_style_name)
-            heading_p = insert_paragraph_after(anchor_p, text=label, style_name=hstyle)
-        # optional extra heading even if some template text sits at anchor
-        if opts.force_dynamic_heading:
-            txt = (heading_p.text or "").strip()
-            if txt.lower() != label.lower():
-                hstyle = _best_heading_style(base_doc, opts.dynamic_heading_level, opts.dynamic_heading_style_name)
-                heading_p = insert_paragraph_after(heading_p, text=label, style_name=hstyle)
-        return heading_p
+    # Anchor found
+    if _is_heading(anchor_p):
+        return anchor_p
 
-    # No suitable anchor (or it was before the cursor) → append sequentially
-    if opts.page_breaks:
-        add_page_break(base_doc)
+    # Insert a proper heading right after the anchor
     hstyle = _best_heading_style(base_doc, opts.dynamic_heading_level, opts.dynamic_heading_style_name)
-    return add_heading_paragraph(base_doc, label, style_name=hstyle)
+    new_p = insert_paragraph_after(anchor_p, text=label, style_name=hstyle)
+    return new_p
 
 
-def _insert_static_section(base_doc: _Doc, label: str, path: str, cursor_idx: int, opts: BuildOptions) -> int:
+def _target_for_dynamic(base_doc: _Doc, label: str, opts: BuildOptions) -> Paragraph:
     """
-    Insert a *static* section. Returns new cursor index.
-    If an anchor exists but appears before the current cursor and honor_final_order_over_anchors is True,
-    we append at the end to keep sequence.
+    Decide the paragraph under which dynamic content should be inserted.
+    We always end up with a heading paragraph returned here.
+    """
+    if not opts.use_anchors:
+        if opts.page_breaks:
+            add_page_break(base_doc)
+        hstyle = _best_heading_style(base_doc, opts.dynamic_heading_level, opts.dynamic_heading_style_name)
+        return add_heading_paragraph(base_doc, label, style_name=hstyle)
+
+    heading_p = _ensure_heading_at_anchor(base_doc, label, opts)
+
+    # If forced heading and the anchor-heading text is different, insert our own heading below
+    if opts.force_dynamic_heading:
+        txt = (heading_p.text or "").strip()
+        if txt.lower() != label.lower():
+            hstyle = _best_heading_style(base_doc, opts.dynamic_heading_level, opts.dynamic_heading_style_name)
+            heading_p = insert_paragraph_after(heading_p, text=label, style_name=hstyle)
+
+    return heading_p
+
+
+def _insert_static_section(base_doc: _Doc, label: str, path: str, opts: BuildOptions) -> None:
+    """
+    Insert a *static* section from a mapped DOCX file.
+    We optionally normalize the first heading (demote/strip/keep) to avoid duplicate headings vs. template.
     """
     sec_doc = safe_read_docx(path)
     normalize_static_section_heading(sec_doc, mode=opts.static_heading_mode)
 
-    after_index = None
     if opts.use_anchors:
         anchor_p = find_anchor_paragraph(base_doc, label)
         if anchor_p is not None:
-            aidx = _para_index(base_doc, anchor_p)
-            if (not opts.honor_final_order_over_anchors) or (aidx >= cursor_idx):
-                after_index = aidx
+            idx = base_doc.paragraphs.index(anchor_p)
+            append_docx(base_doc, sec_doc, after_index=idx)
+            return
 
-    if after_index is None and opts.page_breaks:
+    # default: end of document
+    if opts.page_breaks:
         add_page_break(base_doc)
-
-    append_docx(base_doc, sec_doc, after_index=after_index, mode=opts.static_copy_mode)
-    return len(base_doc.paragraphs) - 1
+    append_docx(base_doc, sec_doc, after_index=None)
 
 
-def _insert_dynamic_section(base_doc: _Doc, label: str, md_text: str, evidence: List[dict], cursor_idx: int, opts: BuildOptions) -> int:
+def _insert_dynamic_section(base_doc: _Doc, label: str, md_text: str, evidence: List[dict], opts: BuildOptions) -> None:
     """
-    Insert a *dynamic* section in sequence:
-    - Heading at anchor (if not before cursor) or appended at end
-    - Markdown block right after heading
-    - Sources line
-    Returns new cursor index.
+    Insert a *dynamic* section:
+    - Ensure a proper heading (style-aware)
+    - Insert markdown content (bullets/paragraphs) *immediately after* heading
+    - Optionally add a 'Sources:' line right after the content block
     """
-    heading_p = _ensure_heading_at_anchor_or_end(base_doc, label, cursor_idx, opts)
+    heading_p = _target_for_dynamic(base_doc, label, opts)
+
+    # Insert content after heading (returns last inserted paragraph)
     last_para = insert_markdown_block(base_doc, md_text, after_paragraph=heading_p)
 
+    # Sources line (distinct paragraph right after content)
     if opts.include_sources and evidence:
         sources = []
         seen = set()
@@ -171,8 +173,6 @@ def _insert_dynamic_section(base_doc: _Doc, label: str, md_text: str, evidence: 
                 seen.add(src); sources.append(src)
         if sources:
             add_sources_line(base_doc, sources, after_paragraph=last_para)
-
-    return len(base_doc.paragraphs) - 1
 
 
 def _insert_toc(base_doc: _Doc, title: str = "Table of Contents") -> None:
@@ -197,30 +197,32 @@ def build_proposal(
 ):
     """
     Build the final proposal DOCX (single file) + optional 'recommendations' DOCX.
-    Returns: (draft_docx_bytes, recos_docx_bytes, preview_dict, meta_dict)
+    Returns:
+        (draft_docx_bytes, recos_docx_bytes, preview_dict, meta_dict)
     preview_dict: {section_label: {"md": "...", "sources": [...], "evidence":[...]}}
     """
     base_doc = Document(template_path)
 
-    # Cursor: the paragraph index we must not insert before.
     if opts.add_toc:
         _insert_toc(base_doc, title="Table of Contents")
-    cursor_idx = len(base_doc.paragraphs) - 1
 
     preview: Dict[str, dict] = {}
     for item in final_order:
         if item.startswith("[Dyn] "):
             label = item[6:].strip()
+            # retrieve SharePoint evidence
             k = opts.top_k_per_section or opts.top_k_default
             ev = get_sp_evidence(label, opts.facts, cfg, k=k)
 
+            # compose section text
             if not ev:
                 md = f"*No high-confidence SharePoint evidence found for **{label}**. Consider re-indexing or adjusting your query.*"
                 evidence = []
             else:
-                numbered, uniq_sources = [], []
+                numbered = []
+                uniq_sources = []
                 for i, e in enumerate(ev, start=1):
-                    src = e.source + (f" {e.page_hint}" if e.page_hint else "")
+                    src = e.source + (f" p.{e.page_hint}" if e.page_hint else "")
                     if e.source and e.source not in uniq_sources:
                         uniq_sources.append(e.source)
                     why = f" — {e.why_relevant}" if e.why_relevant else ""
@@ -245,7 +247,8 @@ def build_proposal(
                     md = f"*LLM error while composing **{label}***: {ex}"
                 evidence = [vars(x) for x in ev]
 
-            cursor_idx = _insert_dynamic_section(base_doc, label, md, evidence, cursor_idx, opts)
+            # insert into the document with proper heading & placement
+            _insert_dynamic_section(base_doc, label, md, evidence, opts)
             preview[label] = {"md": md, "sources": list({e.get('source','') for e in evidence if e.get('source')}), "evidence": evidence}
 
         else:
@@ -253,7 +256,7 @@ def build_proposal(
             path = static_paths.get(label)
             if not path:
                 continue
-            cursor_idx = _insert_static_section(base_doc, label, path, cursor_idx, opts)
+            _insert_static_section(base_doc, label, path, opts)
 
     # finalize
     out = BytesIO()
