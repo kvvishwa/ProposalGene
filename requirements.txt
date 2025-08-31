@@ -15,7 +15,7 @@ langchain>=0.2.3
 langchain-core>=0.2.0
 langchain-community>=0.2.0
 langchain-openai>=0.1.6
-
+sentence-transformers
       # keep if you still want to run the old app locally
 python-docx>=1.1.0
 docx2txt
