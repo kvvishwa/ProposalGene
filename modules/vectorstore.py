@@ -1,8 +1,8 @@
 # modules/vectorstore.py
 # -----------------------------------------------------------------------------
 # Vector store utilities with robust backends:
-# - Uploaded docs  : in-memory Chroma (no SQLite dependency)
-# - SharePoint     : persistent Chroma (self-healing), FAISS fallback if needed
+# - Uploaded docs  : PERSISTENT Chroma (when sqlite>=3.35) or FAISS fallback
+# - SharePoint     : PERSISTENT Chroma (self-healing), FAISS fallback if needed
 # - Normalized embeddings for consistent cosine similarity across backends
 # - Page-aware PDF ingestion + logging + warnings on empty texts
 # -----------------------------------------------------------------------------
@@ -40,15 +40,18 @@ except Exception:
 
 # ---- Robust local imports (project structure can be root-level or modules/*)
 try:
-    from text_extraction import extract_text
-except ModuleNotFoundError:
-    from modules.text_extraction import extract_text  # type: ignore
-
-# Optional: per-page PDF text (if available)
-try:
-    from modules.text_extraction import pdf_text_with_pages as _pdf_pages  # type: ignore
+    from modules.text_extraction import extract_text, pdf_text_with_pages as _pdf_pages  # type: ignore
 except Exception:
-    _pdf_pages = None
+    # fallback to flat imports if modules.* not available
+    try:
+        from text_extraction import extract_text  # type: ignore
+    except Exception:
+        def extract_text(_):  # type: ignore
+            return ""
+    try:
+        from text_extraction import pdf_text_with_pages as _pdf_pages  # type: ignore
+    except Exception:
+        _pdf_pages = None
 
 # SharePoint fetchers: support either export names or wrapper
 _sp_fetch = _sp_ingest_wrap = None
@@ -77,7 +80,7 @@ EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 def _vec_dir_for(cfg, kind: str) -> Path:
     """
     Returns a persistent directory for the given store kind.
-    - 'uploaded'   -> ./vectorstore/uploaded   (only used for FAISS fallback)
+    - 'uploaded'   -> ./vectorstore/uploaded
     - 'sharepoint' -> ./vectorstore/sharepoint
     """
     base = Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR))
@@ -154,7 +157,6 @@ class _FaissStoreAdapter:
         # Keep sidecar copies for keyword fallback
         self._texts.extend(texts)
         self._metas.extend(metadatas)
-
         if self._store is None:
             self._store = FAISS.from_texts(texts, embedding=self._emb, metadatas=metadatas)
         else:
@@ -177,29 +179,11 @@ class _FaissStoreAdapter:
 
 
 # =============================================================================
-# Chroma initializers
+# Chroma builders (persistent, self-healing)
 # =============================================================================
-def _init_uploaded_inmemory_chroma(emb):
-    """
-    Build an in-memory Chroma store for uploaded docs.
-    - No SQLite (persist_directory=None, is_persistent=False)
-    """
-    settings = _ChromaSettings(
-        anonymized_telemetry=False,
-        allow_reset=True,
-        is_persistent=False,   # in-memory
-        # NOTE: DO NOT set persist_directory at all for in-memory
-    )
-    return Chroma(
-        collection_name="uploaded_docs_session",
-        embedding_function=emb,
-        client_settings=settings,
-    )
-
-
 def _build_chroma_or_reset(vec_dir: Path, collection_name: str, emb):
     """
-    Persistent Chroma builder for SharePoint store.
+    Persistent Chroma builder.
     If the underlying SQLite DB is corrupted / partial (e.g., 'no such table ...'),
     it wipes the folder and recreates cleanly.
     """
@@ -245,35 +229,37 @@ def _build_chroma_or_reset(vec_dir: Path, collection_name: str, emb):
 def _init_store(kind: str, cfg):
     """
     Factory for vector stores:
-      - 'uploaded'   -> in-memory Chroma (no SQLite). If Chroma missing, FAISS as last resort.
-      - 'sharepoint' -> persistent Chroma (self-heal) when sqlite>=3.35; else FAISS.
+      - 'uploaded'   -> PERSISTENT Chroma when sqlite>=3.35; else FAISS persistent.
+      - 'sharepoint' -> PERSISTENT Chroma (self-heal) when sqlite>=3.35; else FAISS persistent.
     """
     emb = _embeddings()
 
+    # ---------------- Uploaded (now PERSISTENT) ----------------
     if kind == "uploaded":
-        if _CHROMA_AVAILABLE:
+        vec_dir = _vec_dir_for(cfg, "uploaded")
+        if _CHROMA_AVAILABLE and _sqlite_is_new_enough():
             try:
-                vs = _init_uploaded_inmemory_chroma(emb)
-                log.info("[VectorStore] uploaded backend = Chroma (in-memory)")
+                vs = _build_chroma_or_reset(vec_dir, "uploaded_docs", emb)
+                log.info("[VectorStore] uploaded backend = Chroma (persistent) at %s", str(vec_dir))
                 return vs
             except Exception as ex:
-                log.warning("[VectorStore] uploaded Chroma init failed: %s (falling back)", ex)
+                log.warning("[VectorStore] uploaded Chroma init failed: %s (falling back to FAISS)", ex)
         if _FAISS_AVAILABLE:
-            log.info("[VectorStore] uploaded backend = FAISS (local)")
-            return _FaissStoreAdapter(_vec_dir_for(cfg, "uploaded"), emb)
+            log.info("[VectorStore] uploaded backend = FAISS (persistent) at %s", str(vec_dir))
+            return _FaissStoreAdapter(vec_dir, emb)
         raise RuntimeError("No vector backend available for uploaded docs (need Chroma or FAISS).")
 
-    # SharePoint (persistent)
+    # ---------------- SharePoint (PERSISTENT) ----------------
     vec_dir = _vec_dir_for(cfg, "sharepoint")
     if _CHROMA_AVAILABLE and _sqlite_is_new_enough():
         try:
             vs = _build_chroma_or_reset(vec_dir, "sharepoint_docs", emb)
-            log.info("[VectorStore] sharepoint backend = Chroma (persistent)")
+            log.info("[VectorStore] sharepoint backend = Chroma (persistent) at %s", str(vec_dir))
             return vs
         except Exception as ex:
-            log.warning("[VectorStore] sharepoint Chroma init failed: %s (falling back)", ex)
+            log.warning("[VectorStore] sharepoint Chroma init failed: %s (falling back to FAISS)", ex)
     if _FAISS_AVAILABLE:
-        log.info("[VectorStore] sharepoint backend = FAISS (persistent)")
+        log.info("[VectorStore] sharepoint backend = FAISS (persistent) at %s", str(vec_dir))
         return _FaissStoreAdapter(vec_dir, emb)
     raise RuntimeError("Vector store unavailable: Chroma requires sqlite>=3.35 and FAISS is not installed.")
 
@@ -290,7 +276,7 @@ def init_sharepoint_store(cfg):
 # Maintenance
 # =============================================================================
 def wipe_up_store(cfg):
-    """Remove the uploaded store directory (only relevant if FAISS was used)."""
+    """Remove the uploaded store directory (Chroma/FAISS persistent)."""
     p = _vec_dir_for(cfg, "uploaded")
     if p.exists():
         for f in p.glob("**/*"):
