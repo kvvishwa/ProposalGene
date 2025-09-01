@@ -53,7 +53,7 @@ from modules.text_extraction import extract_text, ocr_pdf
 from modules.llm_processing import generate_intelligence_questions, generate_structuring_questions
 from modules.understanding_extractor import extract_rfp_facts, extract_rfp_facts_from_raw_text, facts_to_context, plan_dynamic_sections, plan_to_blueprint
 from modules.proposal_builder import BuildOptions, build_proposal
-from modules.sp_retrieval import get_sp_evidence_for_question, get_store_evidence  # NEW
+from modules.sp_retrieval import get_sp_evidence_for_question, get_store_evidence
 
 # ---------- small UI helpers for robust evidence rendering ----------
 def _get(ev, key, default=None):
@@ -172,8 +172,9 @@ with tab_chat_sp:
                 uniq_sources = []
                 for i, e in enumerate(ev, start=1):
                     src = _fmt_src(e)
-                    if src and src not in uniq_sources:
-                        uniq_sources.append(src.split(" ")[0])  # just source path/name without page
+                    base_src = src.split(" ")[0] if src else ""
+                    if base_src and base_src not in uniq_sources:
+                        uniq_sources.append(base_src)
                     why = _fmt_why(e)
                     numbered.append(f"[{i}] {_fmt_text(e)}\n(Source: {src}{why})")
                 context = "\n\n".join(numbered)[:8000]
@@ -194,7 +195,12 @@ with tab_chat_sp:
                         ans = res.choices[0].message.content.strip()
                     except Exception as ex:
                         ans = f"LLM error: {ex}"
-                ss.sp_chat_history.append({"role": "assistant", "content": ans, "sources": uniq_sources, "evidence": [vars(x) if not isinstance(x, dict) else x for x in ev]})
+                ss.sp_chat_history.append({
+                    "role": "assistant",
+                    "content": ans,
+                    "sources": uniq_sources,
+                    "evidence": [vars(x) if not isinstance(x, dict) else x for x in ev]
+                })
                 # keep a simple debug copy
                 ss.sp_last_passages = [{"source": _fmt_src(x), "text": _fmt_text(x)} for x in ev]
         else:
@@ -218,10 +224,12 @@ with tab_chat_sp:
     with st.container(border=True):
         for i, turn in enumerate(ss.sp_chat_history):
             if turn["role"] == "user":
-                st.chat_message("user").markdown(turn["content"]); copy_to_clipboard_button(turn["content"], key=f"copy_user_{i}", label="Copy")
+                st.chat_message("user").markdown(turn["content"])
+                copy_to_clipboard_button(turn["content"], key=f"copy_user_{i}", label="Copy")
             else:
                 with st.chat_message("assistant"):
-                    st.markdown(turn["content"]); copy_to_clipboard_button(turn["content"], key=f"copy_assist_{i}", label="Copy")
+                    st.markdown(turn["content"])
+                    copy_to_clipboard_button(turn["content"], key=f"copy_assist_{i}", label="Copy")
                     if turn.get("sources"):
                         st.caption("Sources: " + ", ".join(turn["sources"]))
                         copy_sources_button(turn["sources"], key=f"copy_src_{i}", label="Copy sources")
@@ -257,7 +265,6 @@ with tab_understanding:
             progress_text = st.empty(); progress_bar = st.progress(0.0); n_files = len(new_files)
             with st.spinner("Vectorizing uploaded documents…"):
                 for i, path in enumerate(new_files, 1):
-                    # simple ingest (your earlier working behavior)
                     ingest_files([path], ss.up_store, getattr(cfg, "CHUNK_SIZE", 1000))
                     progress_bar.progress(i / n_files); progress_text.write(f"Processed {i} of {n_files} files")
             progress_bar.empty(); progress_text.empty()
@@ -296,7 +303,6 @@ with tab_understanding:
 
                 ocr_used = False; chars = 0
                 if not isinstance(facts, dict) or _is_empty(facts):
-                    # fallback: try raw text extraction (non-OCR here since you said OCR isn't the issue)
                     raw_blobs = []
                     for p in ss.temp_files:
                         try:
@@ -351,8 +357,9 @@ with tab_understanding:
                         uniq_sources = []
                         for i, e in enumerate(ev, start=1):
                             src = _fmt_src(e)
-                            if src and src not in uniq_sources:
-                                uniq_sources.append(src.split(" ")[0])
+                            base_src = src.split(" ")[0] if src else ""
+                            if base_src and base_src not in uniq_sources:
+                                uniq_sources.append(base_src)
                             why = _fmt_why(e)
                             numbered.append(f"[{i}] {_fmt_text(e)}\n(Source: {src}{why})")
                         context = "\n\n".join(numbered)[:8000]
@@ -372,7 +379,12 @@ with tab_understanding:
                                 ans2 = res.choices[0].message.content.strip()
                             except Exception as ex:
                                 ans2 = f"LLM error: {ex}"
-                        ss.chat_history.append({"role": "assistant", "content": ans2, "sources": uniq_sources, "evidence": [vars(x) if not isinstance(x, dict) else x for x in ev]})
+                        ss.chat_history.append({
+                            "role": "assistant",
+                            "content": ans2,
+                            "sources": uniq_sources,
+                            "evidence": [vars(x) if not isinstance(x, dict) else x for x in ev]
+                        })
                 else:
                     with st.spinner("Thinking…"):
                         ans2, sources2 = rag_answer_uploaded(ss.up_store, oai, cfg, user_q2, top_k=6)
@@ -404,12 +416,17 @@ with tab_understanding:
                     final_order = available_static + [f"[Dyn] {x}" for x in dyn_sel]
                     template_path = str((TEMPLATE_DIR / ss.gen_tpl).resolve())
                     static_paths = {sec: str((STATIC_DIR / static_map_now[sec]).resolve()) for sec in available_static if static_map_now.get(sec)}
-                    opts = BuildOptions(use_anchors=True, template_has_headings=True, page_breaks=True, include_sources=True, add_toc=True,
-                                        rec_style="bullets", top_k_default=6, top_k_per_section=0, tone="Professional",
-                                        static_heading_mode="demote", facts=ss.rfp_facts or {})
+                    opts = BuildOptions(
+                        use_anchors=True, template_has_headings=True, page_breaks=True,
+                        include_sources=True, add_toc=True, rec_style="bullets",
+                        top_k_default=6, top_k_per_section=0, tone="Professional",
+                        static_heading_mode="demote", facts=ss.rfp_facts or {}
+                    )
                     with st.spinner("Generating draft from current facts & template…"):
-                        draft_bytes, recs_bytes, preview, meta = build_proposal(template_path=template_path, static_paths=static_paths,
-                                                                               final_order=final_order, oai=oai, cfg=cfg, opts=opts)
+                        draft_bytes, recs_bytes, preview, meta = build_proposal(
+                            template_path=template_path, static_paths=static_paths,
+                            final_order=final_order, oai=oai, cfg=cfg, opts=opts
+                        )
                     ss.out_draft_bytes = draft_bytes; ss.out_recs_bytes = recs_bytes; ss.dyn_recos_preview = preview
                     meta["template"] = ss.gen_tpl; meta["final_order"] = final_order; meta["timestamp"] = strftime("%Y-%m-%d %H:%M:%S", localtime())
                     ss.last_generation_meta = meta; st.success("Draft generated. See ‘Latest output’ in Proposal Generation tab.")
@@ -509,13 +526,17 @@ with tab_generation:
             template_path = str((TEMPLATE_DIR / ss.gen_tpl).resolve())
             static_map_now = load_static_map(STATIC_MAP_FILE)
             static_paths = {sec: str((STATIC_DIR / static_map_now[sec]).resolve()) for sec in ss.gen_static_sel if static_map_now.get(sec)}
-            opts = BuildOptions(use_anchors=ss.gen_use_anchors, template_has_headings=ss.gen_tpl_has_headings, page_breaks=ss.gen_page_breaks,
-                                include_sources=ss.gen_include_sources, add_toc=ss.gen_add_toc, rec_style=ss.gen_rec_style,
-                                top_k_default=int(ss.gen_top_k), top_k_per_section=int(ss.gen_per_section_k), tone="Professional",
-                                static_heading_mode="demote", facts=ss.rfp_facts or {})
+            opts = BuildOptions(
+                use_anchors=ss.gen_use_anchors, template_has_headings=ss.gen_tpl_has_headings, page_breaks=ss.gen_page_breaks,
+                include_sources=ss.gen_include_sources, add_toc=ss.gen_add_toc, rec_style=ss.gen_rec_style,
+                top_k_default=int(ss.gen_top_k), top_k_per_section=int(ss.gen_per_section_k), tone="Professional",
+                static_heading_mode="demote", facts=ss.rfp_facts or {}
+            )
             with st.spinner("Composing draft and recommendations…"):
-                draft_bytes, recs_bytes, preview, meta = build_proposal(template_path=template_path, static_paths=static_paths,
-                                                                       final_order=final_order, oai=oai, cfg=cfg, opts=opts)
+                draft_bytes, recs_bytes, preview, meta = build_proposal(
+                    template_path=template_path, static_paths=static_paths,
+                    final_order=final_order, oai=oai, cfg=cfg, opts=opts
+                )
             ss.out_draft_bytes = draft_bytes; ss.out_recs_bytes = recs_bytes; ss.dyn_recos_preview = preview
             meta["template"] = ss.gen_tpl; meta["final_order"] = final_order; meta["timestamp"] = strftime("%Y-%m-%d %H:%M:%S", localtime())
             ss.last_generation_meta = meta; st.success("Draft generated. See the 'Latest output' panel below to download anytime.")
@@ -542,12 +563,13 @@ with tab_generation:
                 for sec_name, pkg in ss.dyn_recos_preview.items():
                     st.markdown(f"**{sec_name}**"); st.markdown(pkg["md"])
                     if pkg.get("evidence"):
+                        # Not inside an expander elsewhere, safe here
                         with st.expander(f"Show retrieval diagnostics — {sec_name}", expanded=False):
                             for i, ev in enumerate(pkg["evidence"], start=1):
                                 st.markdown(f"**[{i}]** `{_fmt_src(ev)}`{_fmt_why(ev)}")
                                 st.code(_fmt_text(ev)[:1200], language="text")
                     if pkg.get("sources"): st.caption("Sources: " + ", ".join(pkg["sources"]))
-                    all_md.append(f"## {sec_name}\n\n{pkg['md']}\n"); 
+                    all_md.append(f"## {sec_name}\n\n{pkg['md']}\n")
                     if pkg.get("sources"): all_md.append(f"_Sources: {', '.join(pkg['sources'])}_\n")
                 md_blob = "\n".join(all_md).encode("utf-8")
                 st.download_button("⬇ Download recommendations (Markdown)", data=md_blob, file_name="dynamic_recommendations.md", mime="text/markdown")
@@ -620,12 +642,17 @@ with tab_settings:
             files_for_url = ss.sp_ingested_map.get(selected_site_key, [])
             st.markdown("###### Files Ingested for Selected Site")
             if files_for_url:
-                q = st.text_input("Filter files (type to search)", value=""); flist = [f for f in files_for_url if (q.lower() in os.path.basename(f).lower())]
-                st.write(f"{len(flist)} file(s) shown"); cols = st.columns(3)
-                for i, f in enumerate(flist): 
-                    with cols[i % 3]: st.markdown(f"- `{os.path.basename(f)}`")
-                with st.expander("Show full paths"): 
-                    for f in flist: st.code(f, language="text")
+                q = st.text_input("Filter files (type to search)", value="")
+                flist = [f for f in files_for_url if (q.lower() in os.path.basename(f).lower())]
+                st.write(f"{len(flist)} file(s) shown")
+                cols = st.columns(3)
+                for i, f in enumerate(flist):
+                    with cols[i % 3]:
+                        st.markdown(f"- `{os.path.basename(f)}`")
+                # Avoid nested expanders inside this expander: use checkbox toggle
+                if st.checkbox("Show full paths", value=False, key="show_full_sp_paths"):
+                    for f in flist:
+                        st.code(f, language="text")
             else:
                 st.info("No files recorded yet for this site. Use Pull & Index below.")
 
@@ -670,9 +697,12 @@ with tab_settings:
                 if files:
                     ss.sp_ingested_files = files; ss.temp_files.extend(files)
                     key = canonicalize_site_url(selected_site); ss.sp_ingested_map[key] = files; save_sp_ingested_map(SP_INGEST_MAP_FILE, ss.sp_ingested_map)
-                    _ = init_sharepoint_store(dynamic_cfg); st.success(f"Ingested and indexed {len(files)} files from SharePoint.")
-                    with st.expander("View ingested files"):
-                        for f in files: st.write(os.path.basename(f))
+                    _ = init_sharepoint_store(dynamic_cfg)
+                    st.success(f"Ingested and indexed {len(files)} files from SharePoint.")
+                    # Avoid nested expander: use checkbox toggle
+                    if st.checkbox("Show ingested file names", value=False, key="show_ingested_names"):
+                        for f in files:
+                            st.write(os.path.basename(f))
                 else:
                     st.info("No files were found on this site with the selected filters.")
 
