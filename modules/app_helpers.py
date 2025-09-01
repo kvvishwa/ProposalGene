@@ -9,7 +9,6 @@
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
-
 import os
 import json
 from pathlib import Path
@@ -215,8 +214,7 @@ def get_sp_docs_any(cfg, query: str, k: int = 6) -> Tuple[List[Any], List[str]]:
     return (docs, sources)
 # modules/app_helpers.py  (drop-in replacement of rag_answer_uploaded)
 
-from __future__ import annotations
-from typing import List, Tuple
+
 
 def rag_answer_uploaded(up_store, oai, cfg, prompt: str, top_k: int = 12) -> Tuple[str, List[str]]:
     """
