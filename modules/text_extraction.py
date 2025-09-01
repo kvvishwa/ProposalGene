@@ -113,3 +113,21 @@ def ocr_pdf(path: str, max_pages: int = 20, dpi: int = 250) -> str:
         return "\n".join(text_chunks).strip()
     except Exception:
         return ""
+
+
+def pdf_text_with_pages(path: str):
+    """
+    Yield (text, page_no) for each page using PyMuPDF if available.
+    Returns [] if PyMuPDF is not installed or on error.
+    """
+    if fitz is None:
+        return []
+    try:
+        doc = fitz.open(path)
+        out = []
+        for i, page in enumerate(doc, start=1):
+            out.append((page.get_text("text") or "", i))
+        doc.close()
+        return out
+    except Exception:
+        return []

@@ -1,12 +1,13 @@
 # modules/sp_retrieval.py
 # -----------------------------------------------------------------------------
 # Evidence retrieval helpers for SharePoint and Uploaded stores.
-# Cascading retrieval (MMR -> similarity -> widen -> keyword fallback),
+# Cascading retrieval (MMR -> similarity -> widen -> token/keyword fallbacks),
 # tolerant scoring and per-source caps to avoid "too strict" empty results.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -72,18 +73,18 @@ def _soft_overlap_score(query: str, text: str) -> float:
 def _score_snippet(query: str, text: str, meta: Dict[str, Any]) -> float:
     """
     Combine lexical overlap + gentle length shaping.
-    Keep this forgiving: we don't want to zero-out plausible hits.
+    Kept forgiving: we don't want to zero-out plausible hits.
     """
     base = _soft_overlap_score(query, text)
     L = len(text)
-    # Gentle preference for mid-sized chunks
-    if L < 250:
-        base *= 0.9
-    elif L > 1800:
+    # Gentle preference for mid-sized chunks (loosened)
+    if L < 220:
+        base *= 0.92
+    elif L > 2000:
         base *= 0.95
     # Mild boost if page info present (often indicates PDF page chunking)
-    if "page" in meta or "page_number" in meta or "pageno" in meta:
-        base += 0.03
+    if "page" in meta or "page_number" in meta or "pageno" in meta or meta.get("page_hint"):
+        base += 0.04
     return float(max(0.0, min(1.0, base + 0.001)))
 
 
@@ -91,7 +92,12 @@ def _dedup_key(ev: Evidence) -> str:
     return (ev.source + "|" + (ev.text[:200] if ev.text else "")).lower()
 
 
-def _limit_per_source(evs: Sequence[Evidence], k: int, per_source: int = 3) -> List[Evidence]:
+# ------------------------ Tunables (env-configurable) ------------------------
+
+_PER_SOURCE_CAP = int(os.getenv("RETRIEVAL_PER_SOURCE_CAP", "6"))  # default 6 (was 3)
+
+
+def _limit_per_source(evs: Sequence[Evidence], k: int, per_source: int = _PER_SOURCE_CAP) -> List[Evidence]:
     out: List[Evidence] = []
     per: Dict[str, int] = {}
     for e in evs:
@@ -158,10 +164,39 @@ def _sim_with_scores(store: Any, query: str, k: int) -> Tuple[List[Evidence], Li
         return [], []
 
 
+def _token_fallback(store: Any, question: str, limit: int = 20) -> List[Evidence]:
+    """
+    Universal fallback: query each token individually with small k and accumulate.
+    Works with both Chroma and FAISS (no get_all_texts requirement).
+    """
+    toks = [t for t in _tokenize(question) if len(t) >= 4]
+    if not toks:
+        return []
+    seen: set[str] = set()
+    pool: List[Evidence] = []
+    for t in toks[:10]:
+        try:
+            docs = store.similarity_search(t, k=4) or []
+        except Exception:
+            docs = []
+        for d in docs:
+            ev = _mk_ev(d)
+            if not (ev.text or "").strip():
+                continue
+            sig = _dedup_key(ev)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            ev.text = ev.text[:1600]
+            pool.append(ev)
+            if len(pool) >= limit:
+                return pool
+    return pool
+
+
 def _keyword_fallback(store: Any, query: str, limit: int) -> List[Evidence]:
     """
-    If dense retrieval returns nothing, try simple keyword match.
-    Works with our FAISS adapter exposing get_all_texts(); otherwise no-op.
+    If dense retrieval returns nothing, try simple keyword match (FAISS adapter only).
     """
     get_all = getattr(store, "get_all_texts", None)
     if not callable(get_all):
@@ -189,31 +224,30 @@ def _keyword_fallback(store: Any, query: str, limit: int) -> List[Evidence]:
 def _cascade_search(store: Any, query: str, k: int) -> List[Evidence]:
     """
     Multi-pass retrieval:
-      1) MMR (diverse)
-      2) Similarity top-k
+      1) MMR (diverse, slightly larger)
+      2) Similarity top-k (larger)
       3) Widened similarity if top looks weak
-      4) Keyword fallback
+      4) Token fallback (universal)
+      5) Keyword fallback (FAISS-only)
     """
     # 1) MMR
-    ev_mmr = _mmr_pass(store, query, k=max(6, k))
-    if ev_mmr:
-        base = ev_mmr
-    else:
-        base = []
+    ev_mmr = _mmr_pass(store, query, k=max(8, k))
+    base: List[Evidence] = ev_mmr[:] if ev_mmr else []
 
     # 2) Similarity
-    ev_sim, scores = _sim_with_scores(store, query, k=max(10, k))
+    ev_sim, scores = _sim_with_scores(store, query, k=max(16, k))
     base.extend(ev_sim)
 
-    # If similarity set seems thin, widen
+    # 3) If similarity set seems thin, widen
     def _weak(scores_: List[float]) -> bool:
-        return not scores_ or (scores_[0] < 0.2)
+        # widen unless we have a clearly strong top hit
+        return (not scores_) or (scores_[0] < 0.35)
 
     if _weak(scores):
-        ev_wide, _ = _sim_with_scores(store, query, k=max(24, k * 4))
+        ev_wide, _ = _sim_with_scores(store, query, k=max(32, k * 4))
         base.extend(ev_wide)
 
-    # 3) Dedup
+    # Dedup & trim
     deduped: List[Evidence] = []
     seen: set[str] = set()
     for e in base:
@@ -223,13 +257,16 @@ def _cascade_search(store: Any, query: str, k: int) -> List[Evidence]:
         if sig in seen:
             continue
         seen.add(sig)
-        # trim long text for UI
         e.text = (e.text or "")[:1600]
         deduped.append(e)
 
-    # 4) If still empty, keyword fallback
+    # 4) Token fallback (universal)
     if not deduped:
-        deduped = _keyword_fallback(store, query, limit=max(10, k)) or []
+        deduped = _token_fallback(store, query, limit=max(16, k)) or []
+
+    # 5) Keyword fallback (if FAISS adapter exposes sidecar texts)
+    if not deduped:
+        deduped = _keyword_fallback(store, query, limit=max(16, k)) or []
 
     # Score & rank
     ranked = sorted(
@@ -239,7 +276,7 @@ def _cascade_search(store: Any, query: str, k: int) -> List[Evidence]:
     )
 
     # Cap per source, total k
-    return _limit_per_source(ranked, k=k, per_source=3)
+    return _limit_per_source(ranked, k=k, per_source=_PER_SOURCE_CAP)
 
 
 # -------------------------- Query Expansion ----------------------------------
@@ -247,13 +284,14 @@ def _cascade_search(store: Any, query: str, k: int) -> List[Evidence]:
 def _extract_terms_from_facts(rfp_facts: Optional[dict]) -> List[str]:
     """
     Pull a few useful terms from facts to enrich the query slightly.
-    We keep this conservative to avoid over-filtering.
+    Kept conservative to avoid over-filtering. (Loosened to >=4 chars + more keys)
     """
     if not isinstance(rfp_facts, dict):
         return []
     keys = [
-        "solicitation", "title", "project_name", "scope", "services", "department",
-        "agency", "contract_and_compliance", "evaluation_and_selection"
+        "solicitation","title","project_name","scope","services","department","agency",
+        "proposal_organization","evaluation_and_selection","contract_and_compliance",
+        "minimum_qualifications","submission_instructions"
     ]
     terms: List[str] = []
     for k in keys:
@@ -268,12 +306,8 @@ def _extract_terms_from_facts(rfp_facts: Optional[dict]) -> List[str]:
             for vv in v:
                 if isinstance(vv, str) and vv.strip():
                     terms.append(vv.strip())
-    # keep only a handful to avoid overspecializing
-    flat = " ".join(terms)
-    toks = _tokenize(flat)
-    # prefer longer tokens
-    toks = [t for t in toks if len(t) >= 5]
-    return _uniq(toks)[:8]
+    toks = [t for t in _tokenize(" ".join(terms)) if len(t) >= 4]
+    return _uniq(toks)[:12]
 
 
 def _expand_queries(question: str, rfp_facts: Optional[dict]) -> List[str]:
@@ -311,7 +345,7 @@ def get_store_evidence(store: Any, question: str, rfp_facts: Optional[dict] = No
         reverse=True,
     )
 
-    final = _limit_per_source(ranked, k=k, per_source=3)
+    final = _limit_per_source(ranked, k=k, per_source=_PER_SOURCE_CAP)
     for e in final:
         if not e.why_relevant:
             e.why_relevant = "Relevant to your question by semantic/keyword match."
@@ -348,7 +382,7 @@ def get_sp_evidence_for_question(question: str, rfp_facts: Optional[dict], cfg, 
         key=lambda ev: _score_snippet(question, ev.text or "", {"page_hint": ev.page_hint}),
         reverse=True,
     )
-    final = _limit_per_source(ranked, k=k, per_source=3)
+    final = _limit_per_source(ranked, k=k, per_source=_PER_SOURCE_CAP)
     for e in final:
         if not e.why_relevant:
             e.why_relevant = "Matches policy/topic terms in your question."

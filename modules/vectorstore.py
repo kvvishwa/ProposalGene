@@ -4,13 +4,18 @@
 # - Uploaded docs  : in-memory Chroma (no SQLite dependency)
 # - SharePoint     : persistent Chroma (self-healing), FAISS fallback if needed
 # - Normalized embeddings for consistent cosine similarity across backends
+# - Page-aware PDF ingestion + logging + warnings on empty texts
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional
+
+# Logger
+log = logging.getLogger(__name__)
 
 # Embeddings & splitters
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -38,6 +43,12 @@ try:
     from text_extraction import extract_text
 except ModuleNotFoundError:
     from modules.text_extraction import extract_text  # type: ignore
+
+# Optional: per-page PDF text (if available)
+try:
+    from modules.text_extraction import pdf_text_with_pages as _pdf_pages  # type: ignore
+except Exception:
+    _pdf_pages = None
 
 # SharePoint fetchers: support either export names or wrapper
 _sp_fetch = _sp_ingest_wrap = None
@@ -132,8 +143,9 @@ class _FaissStoreAdapter:
                     self._emb,
                     allow_dangerous_deserialization=True,
                 )
-                # sidecar texts/metas: best-effort; will be rebuilt as new texts arrive
-        except Exception:
+                log.info("[VectorStore] FAISS loaded from %s", str(self._dir))
+        except Exception as ex:
+            log.warning("[VectorStore] FAISS load failed: %s", ex)
             self._store = None
 
     def add_texts(self, texts: List[str], metadatas: Optional[List[dict]] = None):
@@ -171,7 +183,6 @@ def _init_uploaded_inmemory_chroma(emb):
     """
     Build an in-memory Chroma store for uploaded docs.
     - No SQLite (persist_directory=None, is_persistent=False)
-    - Behaves like your original setup (worked before), ideal for per-session use
     """
     settings = _ChromaSettings(
         anonymized_telemetry=False,
@@ -242,11 +253,13 @@ def _init_store(kind: str, cfg):
     if kind == "uploaded":
         if _CHROMA_AVAILABLE:
             try:
-                return _init_uploaded_inmemory_chroma(emb)
-            except Exception:
-                # Fall through to FAISS if available
-                pass
+                vs = _init_uploaded_inmemory_chroma(emb)
+                log.info("[VectorStore] uploaded backend = Chroma (in-memory)")
+                return vs
+            except Exception as ex:
+                log.warning("[VectorStore] uploaded Chroma init failed: %s (falling back)", ex)
         if _FAISS_AVAILABLE:
+            log.info("[VectorStore] uploaded backend = FAISS (local)")
             return _FaissStoreAdapter(_vec_dir_for(cfg, "uploaded"), emb)
         raise RuntimeError("No vector backend available for uploaded docs (need Chroma or FAISS).")
 
@@ -254,11 +267,13 @@ def _init_store(kind: str, cfg):
     vec_dir = _vec_dir_for(cfg, "sharepoint")
     if _CHROMA_AVAILABLE and _sqlite_is_new_enough():
         try:
-            return _build_chroma_or_reset(vec_dir, "sharepoint_docs", emb)
-        except Exception:
-            # fall through to FAISS
-            pass
+            vs = _build_chroma_or_reset(vec_dir, "sharepoint_docs", emb)
+            log.info("[VectorStore] sharepoint backend = Chroma (persistent)")
+            return vs
+        except Exception as ex:
+            log.warning("[VectorStore] sharepoint Chroma init failed: %s (falling back)", ex)
     if _FAISS_AVAILABLE:
+        log.info("[VectorStore] sharepoint backend = FAISS (persistent)")
         return _FaissStoreAdapter(vec_dir, emb)
     raise RuntimeError("Vector store unavailable: Chroma requires sqlite>=3.35 and FAISS is not installed.")
 
@@ -311,6 +326,8 @@ def ingest_files(paths: Iterable[str], store, chunk_size: int = 1000) -> List[st
     """
     Ingest a list of local files into the provided store (uploaded docs flow).
     Works with both Chroma and FAISS adapter.
+    - PDF: page-aware if pdf_text_with_pages is available
+    - Logs warnings when no text could be extracted (e.g., scanned PDF without OCR)
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size, chunk_overlap=120, separators=["\n\n", "\n", " ", ""]
@@ -318,16 +335,30 @@ def ingest_files(paths: Iterable[str], store, chunk_size: int = 1000) -> List[st
     added: List[str] = []
     for p in paths:
         try:
-            text = extract_text(p) or ""
-            if not text.strip():
-                continue
-            chunks = splitter.split_text(text)
-            metadatas = [{"source": p} for _ in chunks]
-            store.add_texts(chunks, metadatas=metadatas)
+            ext = Path(p).suffix.lower()
+            if ext == ".pdf" and _pdf_pages:
+                pages = _pdf_pages(p) or []
+                if not pages:
+                    log.warning("[Ingest] No text extracted (PDF): %s — scanned PDF? (OCR deps missing)", p)
+                    continue
+                for txt, pg in pages:
+                    if not (txt or "").strip():
+                        continue
+                    chunks = splitter.split_text(txt)
+                    metadatas = [{"source": p, "page": pg} for _ in chunks]
+                    store.add_texts(chunks, metadatas=metadatas)
+            else:
+                text = extract_text(p) or ""
+                if not text.strip():
+                    log.warning("[Ingest] No text extracted: %s", p)
+                    continue
+                chunks = splitter.split_text(text)
+                metadatas = [{"source": p} for _ in chunks]
+                store.add_texts(chunks, metadatas=metadatas)
             store.persist()
             added.append(p)
-        except Exception:
-            # Continue with remaining files; callers can log per-file if needed
+        except Exception as ex:
+            log.warning("[Ingest] Skipped %s: %s", p, ex)
             continue
     return added
 
@@ -343,6 +374,8 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
     """
     Download from cfg.SP_SITE_URL and index into the SharePoint store.
     Uses persistent Chroma (self-healing) when possible; else FAISS.
+    - PDF: page-aware if pdf_text_with_pages is available
+    - Logs warnings when no text could be extracted
     """
     if include_exts is None:
         include_exts = ["pdf", "docx", "pptx"]
@@ -360,6 +393,7 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
         local_files = _sp_ingest_wrap(cfg, include_exts=include_exts) or []
 
     if not local_files:
+        log.info("[SP Ingest] No files fetched for ingestion.")
         return []
 
     # Index
@@ -368,15 +402,30 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
 
     for local_path in local_files:
         try:
-            text = extract_text(local_path) or ""
-            if not text.strip():
-                continue
-            chunks = splitter.split_text(text)
+            ext = Path(local_path).suffix.lower()
             cat = _derive_sp_category(local_path)
-            metadatas = [{"source": local_path, "sp_category": cat} for _ in chunks]
-            sp_store.add_texts(chunks, metadatas=metadatas)
+            if ext == ".pdf" and _pdf_pages:
+                pages = _pdf_pages(local_path) or []
+                if not pages:
+                    log.warning("[SP Ingest] No text (PDF): %s", local_path)
+                    continue
+                for txt, pg in pages:
+                    if not (txt or "").strip():
+                        continue
+                    chunks = splitter.split_text(txt)
+                    metadatas = [{"source": local_path, "sp_category": cat, "page": pg} for _ in chunks]
+                    sp_store.add_texts(chunks, metadatas=metadatas)
+            else:
+                text = extract_text(local_path) or ""
+                if not text.strip():
+                    log.warning("[SP Ingest] No text: %s", local_path)
+                    continue
+                chunks = splitter.split_text(text)
+                metadatas = [{"source": local_path, "sp_category": cat} for _ in chunks]
+                sp_store.add_texts(chunks, metadatas=metadatas)
             sp_store.persist()
-        except Exception:
+        except Exception as ex:
+            log.warning("[SP Ingest] Skipped %s: %s", local_path, ex)
             continue
 
     return local_files
