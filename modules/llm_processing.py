@@ -7,7 +7,8 @@
 from __future__ import annotations
 from typing import Dict, List, Tuple, Optional, Any
 
-from modules.sp_retrieval import get_sp_evidence, Evidence  # NEW
+from modules.sp_retrieval import get_sp_evidence_for_question as get_sp_evidence, Evidence
+
 
 # -------------------- Understanding helpers (unchanged) -------------------- #
 
