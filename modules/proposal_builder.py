@@ -28,7 +28,7 @@ from modules.docx_generator import (
     normalize_static_section_heading,
     insert_paragraph_after,   # NEW: OXML-based insert
 )
-from modules.sp_retrieval import get_sp_evidence
+from modules.sp_retrieval import get_sp_evidence_for_question as get_sp_evidence, Evidence
 from modules.utils import safe_read_docx
 
 
