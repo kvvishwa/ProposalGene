@@ -1,14 +1,22 @@
-# modules/vectorstore.py  (self-healing + FAISS fallback)
+# modules/vectorstore.py
+# -----------------------------------------------------------------------------
+# Vector store utilities with robust backends:
+# - Uploaded docs  : in-memory Chroma (no SQLite dependency)
+# - SharePoint     : persistent Chroma (self-healing), FAISS fallback if needed
+# -----------------------------------------------------------------------------
+
+from __future__ import annotations
 
 import os
 import shutil
 from pathlib import Path
-from typing import List, Optional, Iterable
+from typing import Iterable, List, Optional
 
+# Embeddings & splitters
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-# Prefer Chroma, but allow absence
+# Prefer Chroma; may be unavailable in some envs
 _CHROMA_AVAILABLE = False
 try:
     from langchain_community.vectorstores import Chroma
@@ -17,7 +25,7 @@ try:
 except Exception:
     _CHROMA_AVAILABLE = False
 
-# FAISS fallback
+# FAISS fallback (no sqlite)
 _FAISS_AVAILABLE = False
 try:
     from langchain_community.vectorstores import FAISS
@@ -25,48 +33,64 @@ try:
 except Exception:
     _FAISS_AVAILABLE = False
 
-# --- robust local imports ---
+# ---- Robust local imports (project structure can be root-level or packages/modules/*)
 try:
     from text_extraction import extract_text
 except ModuleNotFoundError:
-    from modules.text_extraction import extract_text  # fallback
+    from modules.text_extraction import extract_text  # type: ignore
 
-# Try both layouts: root-level and modules/
+# SharePoint fetchers: support either export names or wrapper
 _sp_fetch = _sp_ingest_wrap = None
 try:
-    from sharepoint import fetch_files_from_sharepoint as _sp_fetch
-    from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
+    from sharepoint import fetch_files_from_sharepoint as _sp_fetch  # type: ignore
+    from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap  # type: ignore
 except ModuleNotFoundError:
     try:
-        from modules.sharepoint import fetch_files_from_sharepoint as _sp_fetch
+        from modules.sharepoint import fetch_files_from_sharepoint as _sp_fetch  # type: ignore
     except Exception:
         _sp_fetch = None
     try:
-        from modules.sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
+        from modules.sharepoint import ingest_sharepoint_files as _sp_ingest_wrap  # type: ignore
     except Exception:
         _sp_ingest_wrap = None
 
+# ---- Defaults / constants
 DEF_BASE = Path(".")
 DEF_VEC_DIR = DEF_BASE / "vectorstore"
 EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
+
+# =============================================================================
+# Helpers
+# =============================================================================
 def _vec_dir_for(cfg, kind: str) -> Path:
+    """
+    Returns a persistent directory for the given store kind.
+    - 'uploaded'   -> ./vectorstore/uploaded   (only used for FAISS fallback)
+    - 'sharepoint' -> ./vectorstore/sharepoint
+    """
     base = Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR))
     p = base / ("uploaded" if kind == "uploaded" else "sharepoint")
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+
 def _embeddings():
     return HuggingFaceEmbeddings(model_name=EMB_MODEL)
+
 
 def _text_splitter(cfg):
     return RecursiveCharacterTextSplitter(
         chunk_size=getattr(cfg, "CHUNK_SIZE", 1000),
         chunk_overlap=getattr(cfg, "CHUNK_OVERLAP", 120),
-        separators=["\n\n", "\n", " ", ""]
+        separators=["\n\n", "\n", " ", ""],
     )
 
+
 def _sqlite_is_new_enough() -> bool:
+    """
+    Check stdlib sqlite version; Chroma wants >= 3.35.0
+    """
     try:
         import sqlite3
         parts = [int(x) for x in getattr(sqlite3, "sqlite_version", "0.0.0").split(".")[:3]]
@@ -76,15 +100,30 @@ def _sqlite_is_new_enough() -> bool:
     except Exception:
         return False
 
-# ---------- FAISS adapter (mirrors used API) ----------
+
+# =============================================================================
+# FAISS adapter (mirror the subset of VectorStore API we use)
+# =============================================================================
 class _FaissStoreAdapter:
+    """
+    Wrap FAISS to look like the pieces of the LangChain VectorStore we rely on:
+      - add_texts(texts, metadatas)
+      - persist() (saves index.faiss + index.pkl)
+      - similarity_search(query, k) [optional]
+      - as_retriever(**kwargs) [optional]
+    """
+
     def __init__(self, dir_path: Path, embedding):
         self._dir = Path(dir_path)
         self._emb = embedding
         self._store = None
         try:
             if (self._dir / "index.faiss").exists():
-                self._store = FAISS.load_local(str(self._dir), self._emb, allow_dangerous_deserialization=True)
+                self._store = FAISS.load_local(
+                    str(self._dir),
+                    self._emb,
+                    allow_dangerous_deserialization=True,
+                )
         except Exception:
             self._store = None
 
@@ -102,12 +141,39 @@ class _FaissStoreAdapter:
     # Optional helpers
     def similarity_search(self, query: str, k: int = 4):
         return [] if self._store is None else self._store.similarity_search(query, k=k)
+
     def as_retriever(self, **kwargs):
         return None if self._store is None else self._store.as_retriever(**kwargs)
 
-# ---------- Chroma builder with self-heal ----------
+
+# =============================================================================
+# Chroma initializers
+# =============================================================================
+def _init_uploaded_inmemory_chroma(emb):
+    """
+    Build an in-memory Chroma store for uploaded docs.
+    - No SQLite (persist_directory=None, is_persistent=False)
+    - Behaves like your original setup (worked before), ideal for per-session use
+    """
+    settings = _ChromaSettings(
+        persist_directory=None,
+        anonymized_telemetry=False,
+        allow_reset=True,
+        is_persistent=False,
+    )
+    return Chroma(
+        collection_name="uploaded_docs_session",
+        embedding_function=emb,
+        client_settings=settings,
+    )
+
+
 def _build_chroma_or_reset(vec_dir: Path, collection_name: str, emb):
-    """Try Chroma; if schema error ('no such table', etc.), wipe folder and recreate."""
+    """
+    Persistent Chroma builder for SharePoint store.
+    If the underlying SQLite DB is corrupted / partial (e.g., 'no such table ...'),
+    it wipes the folder and recreates cleanly.
+    """
     settings = _ChromaSettings(
         persist_directory=str(vec_dir),
         anonymized_telemetry=False,
@@ -121,13 +187,13 @@ def _build_chroma_or_reset(vec_dir: Path, collection_name: str, emb):
             embedding_function=emb,
             client_settings=settings,
         )
-        # Touch to ensure tables exist
+        # Touch the store so tables exist
         vs.persist()
         return vs
     except Exception as e:
         msg = str(e).lower()
         if "no such table" in msg or "internalerror" in msg or "database error" in msg:
-            # Folder is corrupted / mismatched schema. Reset it.
+            # Reset broken schema
             try:
                 shutil.rmtree(vec_dir, ignore_errors=True)
             except Exception:
@@ -141,56 +207,98 @@ def _build_chroma_or_reset(vec_dir: Path, collection_name: str, emb):
             )
             vs.persist()
             return vs
-        # Different failure -> bubble up
         raise
 
+
+# =============================================================================
+# Store factories
+# =============================================================================
 def _init_store(kind: str, cfg):
-    """Chroma if possible; otherwise FAISS."""
-    vec_dir = _vec_dir_for(cfg, kind)
+    """
+    Factory for vector stores:
+      - 'uploaded'   -> in-memory Chroma (no SQLite). If Chroma missing, FAISS as last resort.
+      - 'sharepoint' -> persistent Chroma (self-heal) when sqlite>=3.35; else FAISS.
+    """
     emb = _embeddings()
+
+    if kind == "uploaded":
+        if _CHROMA_AVAILABLE:
+            return _init_uploaded_inmemory_chroma(emb)
+        if _FAISS_AVAILABLE:
+            # Very unlikely path; used only if Chroma import truly failed
+            return _FaissStoreAdapter(_vec_dir_for(cfg, "uploaded"), emb)
+        raise RuntimeError("No vector backend available for uploaded docs (need Chroma or FAISS).")
+
+    # SharePoint (persistent)
+    vec_dir = _vec_dir_for(cfg, "sharepoint")
     if _CHROMA_AVAILABLE and _sqlite_is_new_enough():
         try:
-            return _build_chroma_or_reset(vec_dir, "uploaded_docs" if kind == "uploaded" else "sharepoint_docs", emb)
+            return _build_chroma_or_reset(vec_dir, "sharepoint_docs", emb)
         except Exception:
-            # Last-resort: fallback to FAISS
+            # fall through to FAISS
             pass
-    if not _FAISS_AVAILABLE:
-        raise RuntimeError("Vector store unavailable: Chroma requires sqlite>=3.35 and FAISS is not installed.")
-    return _FaissStoreAdapter(vec_dir, emb)
+    if _FAISS_AVAILABLE:
+        return _FaissStoreAdapter(vec_dir, emb)
+    raise RuntimeError("Vector store unavailable: Chroma requires sqlite>=3.35 and FAISS is not installed.")
+
 
 def init_uploaded_store(cfg):
     return _init_store("uploaded", cfg)
 
+
 def init_sharepoint_store(cfg):
     return _init_store("sharepoint", cfg)
 
+
+# =============================================================================
+# Maintenance
+# =============================================================================
 def wipe_up_store(cfg):
+    """Remove the uploaded store directory (only relevant if FAISS was used)."""
     p = _vec_dir_for(cfg, "uploaded")
     if p.exists():
         for f in p.glob("**/*"):
-            try: f.unlink()
-            except: pass
-        try: p.rmdir()
-        except: pass
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        try:
+            p.rmdir()
+        except Exception:
+            pass
+
 
 def wipe_sp_store(cfg):
+    """Remove the SharePoint store directory (Chroma/FAISS persistent)."""
     p = _vec_dir_for(cfg, "sharepoint")
     if p.exists():
         for f in p.glob("**/*"):
-            try: f.unlink()
-            except: pass
-        try: p.rmdir()
-        except: pass
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        try:
+            p.rmdir()
+        except Exception:
+            pass
 
+
+# =============================================================================
+# Ingestion
+# =============================================================================
 def ingest_files(paths: Iterable[str], store, chunk_size: int = 1000) -> List[str]:
+    """
+    Ingest a list of local files into the provided store (uploaded docs flow).
+    Works with both Chroma and FAISS adapter.
+    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size, chunk_overlap=120, separators=["\n\n", "\n", " ", ""]
     )
-    added = []
+    added: List[str] = []
     for p in paths:
         try:
-            text = extract_text(p)
-            if not text:
+            text = extract_text(p) or ""
+            if not text.strip():
                 continue
             chunks = splitter.split_text(text)
             metadatas = [{"source": p} for _ in chunks]
@@ -198,8 +306,10 @@ def ingest_files(paths: Iterable[str], store, chunk_size: int = 1000) -> List[st
             store.persist()
             added.append(p)
         except Exception:
+            # Continue with remaining files; callers can log per-file if needed
             continue
     return added
+
 
 def _derive_sp_category(path_like: str) -> str:
     rp = (path_like or "").lower()
@@ -207,10 +317,11 @@ def _derive_sp_category(path_like: str) -> str:
         return "Staff Augmentation-IT Professional Services"
     return "Other"
 
+
 def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str]:
     """
-    Download files from cfg.SP_SITE_URL and index them.
-    Uses Chroma (self-healing) if possible; else FAISS; same API.
+    Download from cfg.SP_SITE_URL and index into the SharePoint store.
+    Uses persistent Chroma (self-healing) when possible; else FAISS.
     """
     if include_exts is None:
         include_exts = ["pdf", "docx", "pptx"]
@@ -221,6 +332,7 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
             "fetch_files_from_sharepoint or ingest_sharepoint_files."
         )
 
+    # Pull files
     if _sp_fetch is not None:
         local_files = _sp_fetch(cfg, include_exts=include_exts) or []
     else:
@@ -229,13 +341,14 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
     if not local_files:
         return []
 
+    # Index
     sp_store = init_sharepoint_store(cfg)
     splitter = _text_splitter(cfg)
 
     for local_path in local_files:
         try:
-            text = extract_text(local_path)
-            if not text:
+            text = extract_text(local_path) or ""
+            if not text.strip():
                 continue
             chunks = splitter.split_text(text)
             cat = _derive_sp_category(local_path)

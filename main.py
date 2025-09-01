@@ -114,9 +114,24 @@ except Exception as e:
 
 
 #------------
-def _fmt_why(ev: dict) -> str:
-    v = ev.get("why_relevant")
+def _get(ev, key, default=None):
+    """Supports dict or object with attributes."""
+    if isinstance(ev, dict):
+        return ev.get(key, default)
+    return getattr(ev, key, default)
+
+def _fmt_why(ev) -> str:
+    v = _get(ev, "why_relevant")
     return f" — {v}" if v else ""
+
+def _fmt_src(ev) -> str:
+    src = _get(ev, "source", "")
+    page = _get(ev, "page_hint", "")
+    return f"{src} {page}".strip()
+
+def _fmt_text(ev) -> str:
+    return _get(ev, "text", "") or ""
+
 
 # ---------- safe_expander to avoid nested expanders ----------
 @contextmanager
@@ -230,11 +245,9 @@ with tab_chat_sp:
                         copy_sources_button(turn["sources"], key=f"copy_src_{i}", label="Copy sources")
                     if turn.get("evidence"):
                         with safe_expander("Show evidence used", expanded=False):
-                            for j, ev in enumerate(turn["evidence"], start=1):
-                                src = ev.get("source",""); page = (" " + ev["page_hint"]) if ev.get("page_hint") else ""
-                                why = _fmt_why(ev)
-                                st.markdown(f"**[{j}]** `{src}{page}`{why}")
-                                st.code(ev.get("text","")[:1200], language="text")
+                            for j, ev in enumerate(turn.get("evidence", []), start=1):
+                                st.markdown(f"**[{j}]** `{_fmt_src(ev)}`{_fmt_why(ev)}")
+                                st.code(_fmt_text(ev)[:1200], language="text")
 
     # Legacy retrieval audit panel (shows evidence texts when smart)
     with safe_expander("Show retrieved passages (last query)", expanded=False):
@@ -337,11 +350,9 @@ with tab_understanding:
                             st.caption("Sources: " + ", ".join(turn["sources"]))
                         if turn.get("evidence"):
                             with safe_expander("Show evidence used", expanded=False):
-                                for j, ev in enumerate(turn["evidence"], start=1):
-                                    src = ev.get("source",""); page = (" " + ev["page_hint"]) if ev.get("page_hint") else ""
-                                    why = _fmt_why(ev)
-                                    st.markdown(f"**[{j}]** `{src}{page}`{why}")
-                                    st.code(ev.get("text","")[:1200], language="text")
+                                for j, ev in enumerate(turn.get("evidence", []), start=1):
+                                    st.markdown(f"**[{j}]** `{_fmt_src(ev)}`{_fmt_why(ev)}")
+                                    st.code(_fmt_text(ev)[:1200], language="text")
 
             user_q2 = st.chat_input("Type your question about the uploaded documents…")
             if user_q2:
