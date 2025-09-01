@@ -174,10 +174,10 @@ def _init_uploaded_inmemory_chroma(emb):
     - Behaves like your original setup (worked before), ideal for per-session use
     """
     settings = _ChromaSettings(
-        persist_directory=None,
         anonymized_telemetry=False,
         allow_reset=True,
-        is_persistent=False,
+        is_persistent=False,   # in-memory
+        # NOTE: DO NOT set persist_directory at all for in-memory
     )
     return Chroma(
         collection_name="uploaded_docs_session",
@@ -241,9 +241,12 @@ def _init_store(kind: str, cfg):
 
     if kind == "uploaded":
         if _CHROMA_AVAILABLE:
-            return _init_uploaded_inmemory_chroma(emb)
+            try:
+                return _init_uploaded_inmemory_chroma(emb)
+            except Exception:
+                # Fall through to FAISS if available
+                pass
         if _FAISS_AVAILABLE:
-            # Very unlikely path; used only if Chroma import truly failed
             return _FaissStoreAdapter(_vec_dir_for(cfg, "uploaded"), emb)
         raise RuntimeError("No vector backend available for uploaded docs (need Chroma or FAISS).")
 
