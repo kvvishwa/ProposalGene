@@ -13,7 +13,8 @@ import os
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
-
+# add near the top
+import re
 import streamlit as st
 
 # Vector stores (your implementations)
@@ -25,6 +26,30 @@ from modules.vectorstore import (
 # ---------------------------------------------------------------------
 # Filesystem & persistence
 # ---------------------------------------------------------------------
+
+
+
+def _derive_retrieval_query(prompt: str) -> str:
+    """
+    Prefer a short, high-signal query for vector retrieval.
+    - If the prompt contains a leading 'Context focus cues:' line, use that line.
+    - If the prompt is huge (schema prompts), fall back to broad RFP tokens.
+    """
+    if not prompt:
+        return ""
+    m = re.search(r'^\s*Context\s+focus\s+cues:\s*(.+)$', prompt, flags=re.I | re.M)
+    if m:
+        return m.group(1).strip()
+
+    # If it's a giant schema prompt, use a generic but useful retrieval seed
+    if len(prompt) > 800:
+        return ("rfp procurement contact email phone submission instructions schedule deadline "
+                "evaluation criteria compliance terms page limit mandatory forms")
+
+    # Otherwise, use the first non-empty line (kept short)
+    first_line = next((ln.strip() for ln in prompt.splitlines() if ln.strip()), "")
+    return first_line[:512]
+
 
 def ensure_dirs(base_dir: Path) -> None:
     """Create base subfolders used by the app (idempotent)."""
@@ -215,77 +240,56 @@ def get_sp_docs_any(cfg, query: str, k: int = 6) -> Tuple[List[Any], List[str]]:
 # modules/app_helpers.py  (drop-in replacement of rag_answer_uploaded)
 
 
+def rag_answer_uploaded(up_store: Any, oai, cfg, question: str, top_k: int = 6) -> Tuple[str, List[str]]:
+    if up_store is None:
+        return ("Uploaded store is not ready. Please upload and vectorize documents.", [])
+    # NEW: derive a compact retrieval query from the big prompt
+    retr_q = _derive_retrieval_query(question) or question
 
-def rag_answer_uploaded(up_store, oai, cfg, prompt: str, top_k: int = 12) -> Tuple[str, List[str]]:
-    """
-    Lenient RAG over the uploaded-docs store.
-    Reuses the SharePoint cascade retrieval to avoid empty contexts.
-    Returns (answer, sources).
-    """
-    try:
+    docs = _similarity_search(up_store, retr_q, k=top_k)
+    if not docs and retr_q != question:
+        # tiny fallback: try the original prompt once as well
+        docs = _similarity_search(up_store, question, k=top_k)
+
+    if not docs:
+        prompt = f"No context returned from retrieval. Still attempt a general answer:\n\nQUESTION:\n{question}"
         try:
-            from modules.sp_retrieval import get_store_evidence
-        except ModuleNotFoundError:
-            from sp_retrieval import get_store_evidence  # type: ignore
+            res = oai.chat.completions.create(
+                model=cfg.ANALYSIS_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+            )
+            return (res.choices[0].message.content.strip(), [])
+        except Exception as ex:
+            return (f"LLM error: {ex}", [])
 
-        evs = get_store_evidence(up_store, question=prompt, rfp_facts=None, k=max(10, top_k)) or []
+    context = "\n\n".join(getattr(d, "page_content", getattr(d, "content", "")) or "" for d in docs)
+    prompt = f"""Answer the user's question using ONLY the context below. If the answer is not present, say you couldn't find it.
 
-        # Universal token fallback if still empty
-        if not evs:
-            q = prompt[:200]
-            toks = [t for t in q.lower().replace("/", " ").replace("-", " ").split() if len(t) >= 4][:10]
-            seen = set()
-            pool = []
-            for t in toks:
-                try:
-                    docs = up_store.similarity_search(t, k=4) or []
-                except Exception:
-                    docs = []
-                for d in docs:
-                    txt = getattr(d, "page_content", "") or getattr(d, "content", "") or ""
-                    meta = getattr(d, "metadata", {}) or {}
-                    src = meta.get("source", "") or ""
-                    sig = (src + "|" + txt[:200]).lower()
-                    if not txt.strip() or sig in seen:
-                        continue
-                    seen.add(sig)
-                    pool.append((txt, src))
-                    if len(pool) >= max(12, top_k):
-                        break
-                if len(pool) >= max(12, top_k):
-                    break
-            evs = [{"text": t, "source": s} for (t, s) in pool]
+CONTEXT:
+{context}
 
-        if not evs:
-            return "", []
-
-        ctx_chunks, srcs = [], []
-        for e in evs[:max(12, top_k)]:
-            t = getattr(e, "text", None) or (e["text"] if isinstance(e, dict) else "")
-            s = getattr(e, "source", None) or (e["source"] if isinstance(e, dict) else "")
-            if not t:
-                continue
-            ctx_chunks.append(t[:1800])
-            if s and s not in srcs:
-                srcs.append(str(s))
-        if not ctx_chunks:
-            return "", []
-
-        context = "\n\n---\n\n".join(ctx_chunks)
-        sys = (
-            "You are a precise assistant. Answer ONLY using the provided context. "
-            "If something is missing, say 'Not found in provided context'."
-        )
-        user = f"CONTEXT:\n{context}\n\nQUESTION:\n{prompt}\n\nAnswer succinctly."
+QUESTION:
+{question}
+"""
+    try:
         res = oai.chat.completions.create(
-            model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o-mini"),
-            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
-            temperature=0.0,
+            model=cfg.ANALYSIS_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
         )
-        out = (res.choices[0].message.content or "").strip()
-        return out, srcs
-    except Exception:
-        return "", []
+        ans = res.choices[0].message.content.strip()
+    except Exception as ex:
+        ans = f"LLM error: {ex}"
+
+    sources: List[str] = []
+    for d in docs:
+        meta = getattr(d, "metadata", {}) or {}
+        src = meta.get("source") or meta.get("file") or ""
+        if src and src not in sources:
+            sources.append(src)
+
+    return (ans, sources)
 
 # ---------------------------------------------------------------------
 # DOCX helpers: insert Table of Contents at top (used by proposal_builder)

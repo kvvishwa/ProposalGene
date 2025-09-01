@@ -32,83 +32,6 @@ _RFP_TYPE_CANON = {
     "Research & Innovation": ["research", "pilot", "innovation", "prototype"],
 }
 
-# --- understanding_extractor.py (ADD NEAR TOP) ---
-from typing import Any, Dict, List, Optional, Tuple
-
-def _ue_is_empty_facts(obj: Dict[str, Any]) -> bool:
-    """Conservative check: returns True if facts dict has no meaningful content."""
-    if not isinstance(obj, dict) or not obj:
-        return True
-    for v in obj.values():
-        if isinstance(v, str) and v.strip():
-            return False
-        if isinstance(v, (list, tuple)) and any(
-            (isinstance(x, str) and x.strip()) or (isinstance(x, (dict, list)) and x)
-            for x in v
-        ):
-            return False
-        if isinstance(v, dict) and not _ue_is_empty_facts(v):
-            return False
-    return True
-
-def _ue_merge_dict_deep(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
-    """Safe deep-merge: dicts merge recursively, lists dedup-append, scalars overwrite."""
-    out = dict(a or {})
-    for k, v in (b or {}).items():
-        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
-            out[k] = _ue_merge_dict_deep(out[k], v)
-        elif k in out and isinstance(out[k], list) and isinstance(v, list):
-            seen = set()
-            merged = []
-            for item in out[k] + v:
-                key = repr(item)
-                if key not in seen:
-                    seen.add(key)
-                    merged.append(item)
-            out[k] = merged
-        else:
-            out[k] = v
-    return out
-
-def _last_ditch_direct_extraction(up_store, oai, cfg) -> Optional[Dict[str, Any]]:
-    """
-    Build a broad raw text blob by probing common RFP tokens across the uploaded store,
-    then run the same schema extractor on that blob. Returns facts dict or None.
-    """
-    try:
-        seeds = [
-            "proposal", "scope", "evaluation", "submission",
-            "schedule", "qualification", "contract", "compliance"
-        ]
-        raw_parts: List[str] = []
-        for s in seeds:
-            try:
-                docs = up_store.similarity_search(s, k=6) or []
-            except Exception:
-                docs = []
-            for d in docs:
-                txt = getattr(d, "page_content", "") or getattr(d, "content", "") or ""
-                if txt and txt.strip():
-                    raw_parts.append(txt)
-        raw_blob = "\n\n".join(raw_parts).strip()
-        if not raw_blob:
-            return None
-
-        # Import the raw-text extractor from this module (or fail gracefully)
-        try:
-            # If you're inside this same file, this import still works because Python resolves symbols at runtime
-            from understanding_extractor import extract_rfp_facts_from_raw_text  # type: ignore
-        except Exception:
-            # Fallback for package-style import
-            from modules.understanding_extractor import extract_rfp_facts_from_raw_text  # type: ignore
-
-        data2, _raw = extract_rfp_facts_from_raw_text(raw_blob, oai, cfg, return_raw=True)
-        if isinstance(data2, dict) and not _ue_is_empty_facts(data2):
-            return data2
-        return None
-    except Exception:
-        return None
-
 def _canonicalize_rfp_type(text: str) -> str:
     s = (text or "").lower()
     for canon, cues in _RFP_TYPE_CANON.items():
@@ -481,29 +404,6 @@ def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
 
     # 3) Add missing notes if still blanky
     _add_missing_notes(data)
-
-    # --- understanding_extractor.py (INSIDE extract_rfp_facts, JUST BEFORE 'return data') ---
-    # If the structured passes yielded very little, try a final raw-text pass without relying on a single query.
-    try:
-        # Prefer existing helpers if your file already defines them
-        try:
-            is_empty = _is_effectively_empty  # type: ignore
-        except NameError:
-            is_empty = _ue_is_empty_facts
-
-        try:
-            deep_merge = _merge_dict_deep  # type: ignore
-        except NameError:
-            deep_merge = _ue_merge_dict_deep
-
-        if is_empty(data):
-            fallback = _last_ditch_direct_extraction(up_store, oai, cfg)
-            if isinstance(fallback, dict) and not is_empty(fallback):
-                data = deep_merge(data, fallback)
-    except Exception:
-        # Fail-closed; keep 'data' as-is
-        pass
-
 
     raw_combined = "\n\n---\n\n".join([r for r in raw_all if r])
     return (data, raw_combined) if return_raw else data
