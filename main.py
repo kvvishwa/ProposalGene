@@ -8,13 +8,31 @@
 
 from __future__ import annotations
 
+# --- SQLite backport for Chroma on older images (safe if not needed) ---
+try:
+    import sqlite3 as _stdlib_sqlite
+    def _vtuple(v: str):
+        try:
+            return tuple(int(x) for x in v.split(".")[:3])
+        except Exception:
+            return (0, 0, 0)
+    if _vtuple(getattr(_stdlib_sqlite, "sqlite_version", "0.0.0")) < (3, 35, 0):
+        import sys
+        import pysqlite3 as _pysqlite3  # requires pysqlite3-binary on Linux
+        sys.modules["sqlite3"] = _pysqlite3
+        import sqlite3
+        print("SQLite patched via pysqlite3:", sqlite3.sqlite_version)
+    else:
+        print("System SQLite OK:", _stdlib_sqlite.sqlite_version)
+except Exception as _e:
+    print("SQLite backport not applied:", _e)
+
 import os
 from pathlib import Path
 from time import strftime, localtime
 
 import streamlit as st
 from openai import OpenAI
-from contextlib import contextmanager  # NEW
 
 from config import load_config, Config
 from modules.ui_helpers import (
@@ -37,7 +55,24 @@ from modules.understanding_extractor import extract_rfp_facts, extract_rfp_facts
 from modules.proposal_builder import BuildOptions, build_proposal
 from modules.sp_retrieval import get_sp_evidence_for_question, get_store_evidence  # NEW
 
-# ---------- Streamlit page config ----------
+# ---------- small UI helpers for robust evidence rendering ----------
+def _get(ev, key, default=None):
+    if isinstance(ev, dict):
+        return ev.get(key, default)
+    return getattr(ev, key, default)
+
+def _fmt_why(ev) -> str:
+    v = _get(ev, "why_relevant")
+    return f" — {v}" if v else ""
+
+def _fmt_src(ev) -> str:
+    src = _get(ev, "source", "")
+    page = _get(ev, "page_hint", "")
+    return f"{src} {page}".strip() if src or page else ""
+
+def _fmt_text(ev) -> str:
+    return _get(ev, "text", "") or ""
+
 st.set_page_config(page_title="📄 Proposal Studio", layout="wide", page_icon="📄")
 st.markdown("""
 <style>
@@ -53,7 +88,7 @@ st.title("📄 Proposal Studio")
 cfg = load_config()
 oai = OpenAI(api_key=cfg.OPENAI_API_KEY)
 
-# ---------- constants/paths ----------
+# ----------------- constants/paths -----------------
 BASE_DIR = Path(getattr(cfg, "BASE_DIR", "."))
 SP_URL_STORE = BASE_DIR / "sp_urls.json"
 SP_INGEST_MAP_FILE = BASE_DIR / "sp_ingested_map.json"
@@ -65,9 +100,8 @@ SUPPORTED_UPLOAD_TYPES = ["pdf", "docx", "pptx"]
 
 STATIC_SECTIONS = ["Profile of the Firm","Cover Letter","Executive Summary","Experience","Offerings","References","Team & Credentials","Case Studies","Confidentiality"]
 
-# ---------- session state ----------
+# ----------------- session state -----------------
 ss = st.session_state
-ss.setdefault("_exp_depth", 0)  # NEW: expander depth guard
 ss.setdefault("uploaded_paths", []); ss.setdefault("up_store", None); ss.setdefault("vectorized", False); ss.setdefault("temp_files", [])
 ss.setdefault("sp_ingested_files", []); ss.setdefault("sp_ingested_map", load_sp_ingested_map(SP_INGEST_MAP_FILE)); ss.setdefault("sp_urls", load_saved_urls(SP_URL_STORE)); ss.setdefault("sp_selected_idx", 0)
 ss.setdefault("sp_chat_history", []); ss.setdefault("chat_history", [])
@@ -86,76 +120,24 @@ SP_URL_STORE.parent.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 
-# ---------- tabs ----------
+# ----------------- tabs -----------------
 tab_chat_sp, tab_understanding, tab_generation, tab_settings = st.tabs(
     ["Chat (SharePoint DB)", "Proposal Understanding", "Proposal Generation", "Settings"]
 )
 
-# ---------- SQLite Sanity Check ----------
-# --- SQLite backport for Chroma on older Azure images ---
-# Place this block RIGHT AFTER your "from __future__ import annotations" line.
-# SQLite backport for environments with old libsqlite3
+# SQLite Sanity Check
 try:
-    import sqlite3 as _stdlib_sqlite
-    def _vtuple(v: str):
-        try: return tuple(int(x) for x in v.split(".")[:3])
-        except: return (0,0,0)
-    if _vtuple(getattr(_stdlib_sqlite, "sqlite_version", "0.0.0")) < (3,35,0):
-        import sys, pysqlite3 as _pysqlite3
-        sys.modules["sqlite3"] = _pysqlite3
-        import sqlite3
-        print("SQLite patched via pysqlite3:", sqlite3.sqlite_version)
-    else:
-        print("System SQLite OK:", _stdlib_sqlite.sqlite_version)
+    import sqlite3, platform
+    print("SQLite OK | Python:", platform.python_version(), "| SQLite lib ver:", sqlite3.sqlite_version)
 except Exception as e:
-    print("SQLite backport not applied:", e)
-
-# --- end patch ---
-
-
-#------------
-def _get(ev, key, default=None):
-    """Supports dict or object with attributes."""
-    if isinstance(ev, dict):
-        return ev.get(key, default)
-    return getattr(ev, key, default)
-
-def _fmt_why(ev) -> str:
-    v = _get(ev, "why_relevant")
-    return f" — {v}" if v else ""
-
-def _fmt_src(ev) -> str:
-    src = _get(ev, "source", "")
-    page = _get(ev, "page_hint", "")
-    return f"{src} {page}".strip()
-
-def _fmt_text(ev) -> str:
-    return _get(ev, "text", "") or ""
-
-
-# ---------- safe_expander to avoid nested expanders ----------
-@contextmanager
-def safe_expander(label: str, **kwargs):
-    depth = st.session_state.get("_exp_depth", 0)
-    if depth > 0:
-        # Already inside an expander; show a bordered container as a safe fallback.
-        st.markdown(f"**{label}**")
-        with st.container(border=True):
-            yield
-    else:
-        st.session_state["_exp_depth"] = depth + 1
-        try:
-            with st.expander(label, **kwargs):
-                yield
-        finally:
-            st.session_state["_exp_depth"] = depth
+    print("SQLite import failed:", e)
 
 # ================= Chat (SharePoint DB) =================
 with tab_chat_sp:
     st.subheader("Chat with SharePoint Vector DB")
     st.caption("Choose retrieval mode: traditional vs. Smart Retrieval (evidence packs).")
 
-    with safe_expander("Index status & debug", expanded=False):
+    with st.expander("Index status & debug", expanded=False):
         chunks, vec_path = sp_index_stats(cfg); st.write(f"SharePoint index path: `{vec_path}`"); st.write(f"Chunks available: **{chunks}**")
         if chunks == 0: st.info("The index appears empty. Use Settings → SharePoint → Pull & Index.")
 
@@ -189,11 +171,11 @@ with tab_chat_sp:
                 numbered = []
                 uniq_sources = []
                 for i, e in enumerate(ev, start=1):
-                    src = e.source + (f" {e.page_hint}" if e.page_hint else "")
-                    if e.source and e.source not in uniq_sources:
-                        uniq_sources.append(e.source)
+                    src = _fmt_src(e)
+                    if src and src not in uniq_sources:
+                        uniq_sources.append(src.split(" ")[0])  # just source path/name without page
                     why = _fmt_why(e)
-                    numbered.append(f"[{i}] {e.text}\n(Source: {src}{why})")
+                    numbered.append(f"[{i}] {_fmt_text(e)}\n(Source: {src}{why})")
                 context = "\n\n".join(numbered)[:8000]
 
                 prompt = (
@@ -212,9 +194,9 @@ with tab_chat_sp:
                         ans = res.choices[0].message.content.strip()
                     except Exception as ex:
                         ans = f"LLM error: {ex}"
-                ss.sp_chat_history.append({"role": "assistant", "content": ans, "sources": uniq_sources, "evidence": [vars(x) for x in ev]})
+                ss.sp_chat_history.append({"role": "assistant", "content": ans, "sources": uniq_sources, "evidence": [vars(x) if not isinstance(x, dict) else x for x in ev]})
                 # keep a simple debug copy
-                ss.sp_last_passages = [{"source": x.source, "text": x.text} for x in ev]
+                ss.sp_last_passages = [{"source": _fmt_src(x), "text": _fmt_text(x)} for x in ev]
         else:
             # ---- Legacy path
             ss.sp_last_passages = get_passages_for_query(cfg, q, k=6)
@@ -244,19 +226,20 @@ with tab_chat_sp:
                         st.caption("Sources: " + ", ".join(turn["sources"]))
                         copy_sources_button(turn["sources"], key=f"copy_src_{i}", label="Copy sources")
                     if turn.get("evidence"):
-                        with safe_expander("Show evidence used", expanded=False):
+                        with st.expander("Show evidence used", expanded=False):
                             for j, ev in enumerate(turn.get("evidence", []), start=1):
                                 st.markdown(f"**[{j}]** `{_fmt_src(ev)}`{_fmt_why(ev)}")
                                 st.code(_fmt_text(ev)[:1200], language="text")
 
     # Legacy retrieval audit panel (shows evidence texts when smart)
-    with safe_expander("Show retrieved passages (last query)", expanded=False):
+    with st.expander("Show retrieved passages (last query)", expanded=False):
         if ss.sp_last_passages:
             for j, psg in enumerate(ss.sp_last_passages, 1):
                 st.markdown(f"**Passage {j}** — _{psg.get('source','')}_")
                 st.code(psg.get("text",""), language="text")
         else:
             st.caption("Send a message first to see retrieved passages here.")
+
 
 # ================= Proposal Understanding =================
 with tab_understanding:
@@ -270,9 +253,11 @@ with tab_understanding:
             if uf.name not in ss.uploaded_paths:
                 path = save_to_temp(uf); new_files.append(path); ss.uploaded_paths.append(uf.name)
         if new_files:
-            ss.up_store = init_uploaded_store(cfg); progress_text = st.empty(); progress_bar = st.progress(0.0); n_files = len(new_files)
+            ss.up_store = init_uploaded_store(cfg)
+            progress_text = st.empty(); progress_bar = st.progress(0.0); n_files = len(new_files)
             with st.spinner("Vectorizing uploaded documents…"):
                 for i, path in enumerate(new_files, 1):
+                    # simple ingest (your earlier working behavior)
                     ingest_files([path], ss.up_store, getattr(cfg, "CHUNK_SIZE", 1000))
                     progress_bar.progress(i / n_files); progress_text.write(f"Processed {i} of {n_files} files")
             progress_bar.empty(); progress_text.empty()
@@ -295,7 +280,7 @@ with tab_understanding:
     st.caption(f"Vectorized: {bool(ss.vectorized)} • Store ready: {ss.up_store is not None}")
 
     if ss.vectorized and ss.up_store is not None:
-        # ---- Extract facts (as in your latest working version) ----
+        # ---- Extract facts ----
         if ss.rfp_facts is None:
             with st.spinner("Extracting issuer, contacts, schedule, instructions, qualifications, and evaluation…"):
                 try:
@@ -311,13 +296,11 @@ with tab_understanding:
 
                 ocr_used = False; chars = 0
                 if not isinstance(facts, dict) or _is_empty(facts):
+                    # fallback: try raw text extraction (non-OCR here since you said OCR isn't the issue)
                     raw_blobs = []
                     for p in ss.temp_files:
                         try:
                             txt = extract_text(p) or ""
-                            if not txt.strip() and ss.ocr_enable and p.lower().endswith(".pdf"):
-                                otxt = ocr_pdf(p, max_pages=20, dpi=250)
-                                if otxt.strip(): txt = otxt; ocr_used = True
                             if txt.strip(): raw_blobs.append(txt)
                         except Exception:
                             continue
@@ -328,13 +311,13 @@ with tab_understanding:
                             if isinstance(facts2, dict) and not _is_empty(facts2): facts, raw = facts2, raw2
 
                 if not isinstance(facts, dict) or not facts:
-                    facts = {"missing_notes": ["Extractor returned empty JSON. Likely no text from RAG or PDF is image-based."]}
+                    facts = {"missing_notes": ["Extractor returned empty JSON."]}
 
                 ss.rfp_facts = facts; ss.rfp_raw = raw; ss.ocr_used_last = bool(ocr_used); ss.raw_chars_last = int(chars)
 
         render_rfp_facts(ss.rfp_facts or {}, show_provenance=True)
 
-        # ------------- Chat with your RFP (now supports Smart Retrieval) -------------
+        # ------------- Chat with your RFP (supports Smart Retrieval) -------------
         st.divider()
         st.markdown("### Ask Anything (Chat with your RFP)")
         rfp_smart = st.checkbox("Use Smart Retrieval (evidence packs)", value=True, key="rfp_chat_smart")
@@ -349,7 +332,7 @@ with tab_understanding:
                         if turn.get("sources"):
                             st.caption("Sources: " + ", ".join(turn["sources"]))
                         if turn.get("evidence"):
-                            with safe_expander("Show evidence used", expanded=False):
+                            with st.expander("Show evidence used", expanded=False):
                                 for j, ev in enumerate(turn.get("evidence", []), start=1):
                                     st.markdown(f"**[{j}]** `{_fmt_src(ev)}`{_fmt_why(ev)}")
                                     st.code(_fmt_text(ev)[:1200], language="text")
@@ -367,11 +350,11 @@ with tab_understanding:
                         numbered = []
                         uniq_sources = []
                         for i, e in enumerate(ev, start=1):
-                            src = e.source + (f" {e.page_hint}" if e.page_hint else "")
-                            if e.source and e.source not in uniq_sources:
-                                uniq_sources.append(e.source)
-                            why = _fmt_why(ev)
-                            numbered.append(f"[{i}] {e.text}\n(Source: {src}{why})")
+                            src = _fmt_src(e)
+                            if src and src not in uniq_sources:
+                                uniq_sources.append(src.split(" ")[0])
+                            why = _fmt_why(e)
+                            numbered.append(f"[{i}] {_fmt_text(e)}\n(Source: {src}{why})")
                         context = "\n\n".join(numbered)[:8000]
                         prompt = (
                             "Answer the user's question strictly using the evidence below.\n"
@@ -389,7 +372,7 @@ with tab_understanding:
                                 ans2 = res.choices[0].message.content.strip()
                             except Exception as ex:
                                 ans2 = f"LLM error: {ex}"
-                        ss.chat_history.append({"role": "assistant", "content": ans2, "sources": uniq_sources, "evidence": [vars(x) for x in ev]})
+                        ss.chat_history.append({"role": "assistant", "content": ans2, "sources": uniq_sources, "evidence": [vars(x) if not isinstance(x, dict) else x for x in ev]})
                 else:
                     with st.spinner("Thinking…"):
                         ans2, sources2 = rag_answer_uploaded(ss.up_store, oai, cfg, user_q2, top_k=6)
@@ -401,9 +384,9 @@ with tab_understanding:
         plan = plan_dynamic_sections(ctx_from_facts, static_map_now, top_n=6)
         ss.section_plan = [p.to_dict() if hasattr(p, "to_dict") else vars(p) for p in plan]
 
-        with safe_expander("Show proposed dynamic plan", expanded=False):
+        with st.expander("Show proposed dynamic plan", expanded=False):
             for p in plan:
-                st.write(f"- **{p.label}** (priority {getattr(p, 'priority', 0):2.2f}, tone {p.knobs.tone}, style {p.knobs.style})")
+                st.write(f"- **{p.label}** (priority {getattr(p, 'priority', 0):.2f}, tone {p.knobs.tone}, style {p.knobs.style})")
 
         st.markdown("#### Generate now from these facts")
         cgl1, cgl2 = st.columns([1,1])
@@ -434,6 +417,7 @@ with tab_understanding:
     else:
         st.info("Upload RFP documents above to enable facts, insights and chat.")
 
+
 # ================= Proposal Generation =================
 with tab_generation:
     if ss.get("pending_blueprint"):
@@ -455,7 +439,7 @@ with tab_generation:
     st.subheader("Proposal Generation")
     st.markdown('<div class="sticky"><span class="badge">Step 2</span> Single DOCX from Template + Static + Dynamic (SharePoint-grounded)</div>', unsafe_allow_html=True)
 
-    with safe_expander("SharePoint index status", expanded=False):
+    with st.expander("SharePoint index status", expanded=False):
         chunks, vec_path = sp_index_stats(cfg); st.write(f"Index path: `{vec_path}` • Chunks: **{chunks}**")
         if chunks == 0: st.warning("SharePoint index is empty. Dynamic recommendations will be generic.")
 
@@ -542,7 +526,7 @@ with tab_generation:
         if ss.out_draft_bytes:
             tpl_name = meta.get("template", "—"); ts = meta.get("timestamp", "—"); order_preview = ", ".join(meta.get("final_order", [])) or "—"
             st.caption(f"Generated: **{ts}** • Template: **{tpl_name}**")
-            with safe_expander("Show final sequence used", expanded=False): st.write(order_preview)
+            with st.expander("Show final sequence used", expanded=False): st.write(order_preview)
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("⬇ Download Draft DOCX", data=ss.out_draft_bytes, file_name="Draft_Response_Static+Dynamic.docx",
@@ -558,23 +542,23 @@ with tab_generation:
                 for sec_name, pkg in ss.dyn_recos_preview.items():
                     st.markdown(f"**{sec_name}**"); st.markdown(pkg["md"])
                     if pkg.get("evidence"):
-                        with safe_expander(f"Show retrieval diagnostics — {sec_name}", expanded=False):
+                        with st.expander(f"Show retrieval diagnostics — {sec_name}", expanded=False):
                             for i, ev in enumerate(pkg["evidence"], start=1):
-                                src = ev.get("source",""); page = (" " + ev["page_hint"]) if ev.get("page_hint") else ""
-                                why = _fmt_why(ev)
-                                st.markdown(f"**[{i}]** `{src}{page}`{why}"); st.code(ev.get("text","")[:1200], language="text")
+                                st.markdown(f"**[{i}]** `{_fmt_src(ev)}`{_fmt_why(ev)}")
+                                st.code(_fmt_text(ev)[:1200], language="text")
                     if pkg.get("sources"): st.caption("Sources: " + ", ".join(pkg["sources"]))
-                    all_md.append(f"## {sec_name}\n\n{pkg['md']}\n")
+                    all_md.append(f"## {sec_name}\n\n{pkg['md']}\n"); 
                     if pkg.get("sources"): all_md.append(f"_Sources: {', '.join(pkg['sources'])}_\n")
                 md_blob = "\n".join(all_md).encode("utf-8")
                 st.download_button("⬇ Download recommendations (Markdown)", data=md_blob, file_name="dynamic_recommendations.md", mime="text/markdown")
         else:
             st.caption("No generated files yet. Click **Generate** above to create your draft.")
 
+
 # ================= Settings =================
 with tab_settings:
     st.subheader("Settings")
-    with safe_expander("Static Library (manage section .docx files)", expanded=False):
+    with st.expander("Static Library (manage section .docx files)", expanded=False):
         STATIC_DIR.mkdir(parents=True, exist_ok=True); TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
         static_map_now = load_static_map(STATIC_MAP_FILE)
 
@@ -620,13 +604,13 @@ with tab_settings:
                 val = st.session_state.get(f"map_{sec}", "(none)"); static_map_now[sec] = "" if val == "(none)" else val
             save_static_map(STATIC_MAP_FILE, static_map_now); st.success("Static section mapping saved.")
 
-        st.markdown("---"); st.markdown("##### Proposal Templates (.docx)")  # typo fix optional: replace with st.markdown
+        st.markdown("---"); st.markdown("##### Proposal Templates (.docx)")
         tpl_upload = st.file_uploader("Upload a proposal template (.docx)", type=["docx"], accept_multiple_files=False)
         if tpl_upload and st.button("Save Template"):
             out = TEMPLATE_DIR / tpl_upload.name; out.write_bytes(tpl_upload.getvalue()); st.success(f"Saved template: {tpl_upload.name}")
         st.caption(f"Templates folder: `{TEMPLATE_DIR.resolve()}`")
 
-    with safe_expander("SharePoint (sites, ingestion & maintenance)", expanded=False):
+    with st.expander("SharePoint (sites, ingestion & maintenance)", expanded=False):
         ss.sp_urls = ss.get("sp_urls", load_saved_urls(SP_URL_STORE)); urls = ss.sp_urls
         if not urls: st.info("No SharePoint site URLs saved yet. Add one below to get started.")
         if urls:
@@ -640,7 +624,7 @@ with tab_settings:
                 st.write(f"{len(flist)} file(s) shown"); cols = st.columns(3)
                 for i, f in enumerate(flist): 
                     with cols[i % 3]: st.markdown(f"- `{os.path.basename(f)}`")
-                with safe_expander("Show full paths"): 
+                with st.expander("Show full paths"): 
                     for f in flist: st.code(f, language="text")
             else:
                 st.info("No files recorded yet for this site. Use Pull & Index below.")
@@ -687,11 +671,11 @@ with tab_settings:
                     ss.sp_ingested_files = files; ss.temp_files.extend(files)
                     key = canonicalize_site_url(selected_site); ss.sp_ingested_map[key] = files; save_sp_ingested_map(SP_INGEST_MAP_FILE, ss.sp_ingested_map)
                     _ = init_sharepoint_store(dynamic_cfg); st.success(f"Ingested and indexed {len(files)} files from SharePoint.")
-                    with safe_expander("View ingested files"):
+                    with st.expander("View ingested files"):
                         for f in files: st.write(os.path.basename(f))
                 else:
                     st.info("No files were found on this site with the selected filters.")
 
-    with safe_expander("OCR Controls & Diagnostics", expanded=False):
+    with st.expander("OCR Controls & Diagnostics", expanded=False):
         ss.ocr_enable = st.checkbox("Enable OCR fallback for PDFs (uses Tesseract if available)", value=bool(ss.ocr_enable))
         st.caption("When enabled, if a PDF yields no text, we'll attempt image OCR as a fallback.")

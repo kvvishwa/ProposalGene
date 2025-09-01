@@ -3,11 +3,11 @@
 # Vector store utilities with robust backends:
 # - Uploaded docs  : in-memory Chroma (no SQLite dependency)
 # - SharePoint     : persistent Chroma (self-healing), FAISS fallback if needed
+# - Normalized embeddings for consistent cosine similarity across backends
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -33,7 +33,7 @@ try:
 except Exception:
     _FAISS_AVAILABLE = False
 
-# ---- Robust local imports (project structure can be root-level or packages/modules/*)
+# ---- Robust local imports (project structure can be root-level or modules/*)
 try:
     from text_extraction import extract_text
 except ModuleNotFoundError:
@@ -76,7 +76,12 @@ def _vec_dir_for(cfg, kind: str) -> Path:
 
 
 def _embeddings():
-    return HuggingFaceEmbeddings(model_name=EMB_MODEL)
+    # Normalize embeddings so cosine behaves consistently across FAISS/Chroma
+    return HuggingFaceEmbeddings(
+        model_name=EMB_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
 
 
 def _text_splitter(cfg):
@@ -111,12 +116,15 @@ class _FaissStoreAdapter:
       - persist() (saves index.faiss + index.pkl)
       - similarity_search(query, k) [optional]
       - as_retriever(**kwargs) [optional]
+      - get_all_texts() for keyword fallback in retrieval
     """
 
     def __init__(self, dir_path: Path, embedding):
         self._dir = Path(dir_path)
         self._emb = embedding
         self._store = None
+        self._texts: List[str] = []
+        self._metas: List[dict] = []
         try:
             if (self._dir / "index.faiss").exists():
                 self._store = FAISS.load_local(
@@ -124,10 +132,17 @@ class _FaissStoreAdapter:
                     self._emb,
                     allow_dangerous_deserialization=True,
                 )
+                # sidecar texts/metas: best-effort; will be rebuilt as new texts arrive
         except Exception:
             self._store = None
 
     def add_texts(self, texts: List[str], metadatas: Optional[List[dict]] = None):
+        if metadatas is None:
+            metadatas = [{} for _ in texts]
+        # Keep sidecar copies for keyword fallback
+        self._texts.extend(texts)
+        self._metas.extend(metadatas)
+
         if self._store is None:
             self._store = FAISS.from_texts(texts, embedding=self._emb, metadatas=metadatas)
         else:
@@ -144,6 +159,9 @@ class _FaissStoreAdapter:
 
     def as_retriever(self, **kwargs):
         return None if self._store is None else self._store.as_retriever(**kwargs)
+
+    def get_all_texts(self) -> List[tuple[str, dict]]:
+        return list(zip(self._texts, self._metas))
 
 
 # =============================================================================

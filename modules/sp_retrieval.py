@@ -1,253 +1,355 @@
 # modules/sp_retrieval.py
 # -----------------------------------------------------------------------------
-# SharePoint retrieval upgraded to structured evidence packs.
-# Now also supports:
-#   - get_sp_evidence_for_question(question, facts, cfg, k=8)
-#   - get_store_evidence(store, question, facts, k=8)
-# These are used by Chat (SP) and Chat (RFP Understanding) respectively.
+# Evidence retrieval helpers for SharePoint and Uploaded stores.
+# Cascading retrieval (MMR -> similarity -> widen -> keyword fallback),
+# tolerant scoring and per-source caps to avoid "too strict" empty results.
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-import re
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from modules.vectorstore import init_sharepoint_store
-from modules.app_helpers import _similarity_search  # lightweight wrapper around store.similarity_search
 
-# Section cue words (used by dynamic generation)
-_SECTION_CUES: Dict[str, str] = {
-    "Executive Summary": "objectives outcomes value differentiators benefits similar wins impact",
-    "Approach & Methodology": "approach methodology phases activities deliverables tools work plan",
-    "Staffing Plan & Roles": "staffing roles responsibilities team structure key personnel coverage hours",
-    "Transition & Knowledge Transfer": "transition onboarding ramp-up knowledge transfer shadowing KT plan",
-    "Service Levels & Governance": "service levels SLA KPI reporting cadence governance escalation",
-    "Assumptions & Exclusions": "assumptions exclusions constraints dependencies",
-    "Risk & Mitigation Plan": "risk risks mitigation register probability impact response",
-    "Project Governance": "governance steering committee decision-making reporting escalation cadence",
-    "Change Management": "change management adoption training communications readiness",
-    "Quality Management": "quality assurance QA QC testing metrics continuous improvement",
-    "Compliance & Security": "compliance security privacy standards certifications data protection",
-    "Timeline & Milestones": "timeline milestones schedule plan deliverables",
-}
-
-_SECTION_PREFER_TYPES: Dict[str, List[str]] = {
-    "Executive Summary": ["case_study", "offering", "overview"],
-    "Approach & Methodology": ["methodology", "process", "playbook"],
-    "Staffing Plan & Roles": ["staffing", "roles", "organization", "resume", "profile"],
-    "Transition & Knowledge Transfer": ["transition", "onboarding"],
-    "Service Levels & Governance": ["sla", "governance", "operations"],
-    "Assumptions & Exclusions": ["assumptions", "contract", "sow"],
-    "Risk & Mitigation Plan": ["risk", "governance"],
-    "Project Governance": ["governance", "operations"],
-    "Change Management": ["change", "adoption", "training"],
-    "Quality Management": ["quality", "testing"],
-    "Compliance & Security": ["security", "compliance", "policy"],
-    "Timeline & Milestones": ["plan", "schedule", "project"],
-}
-
+# ----------------------------- Data Model ------------------------------------
 
 @dataclass
 class Evidence:
     text: str
     source: str
-    score: float
-    why_relevant: str = ""
     page_hint: Optional[str] = None
+    why_relevant: Optional[str] = None
 
 
-# ----------------------------- utilities -----------------------------
+# ----------------------------- Utilities -------------------------------------
 
-def _top_terms(text: str, max_terms: int = 8) -> List[str]:
-    """Naive keyword picker: longest distinct words excluding stop words."""
-    stop = set("the a an and or for with from into to of we you they our your is are be by as on at in".split())
-    words = re.findall(r"[A-Za-z][A-Za-z\-]{2,}", text)
-    words = [w.lower() for w in words if w.lower() not in stop]
-    words = sorted(set(words), key=lambda w: (-len(w), w))
-    return words[:max_terms]
+def _as_text(doc: Any) -> str:
+    return (
+        getattr(doc, "page_content", None)
+        or getattr(doc, "content", None)
+        or (str(doc) if doc is not None else "")
+    ) or ""
 
 
-def _extract_facts_terms(facts: Optional[dict]) -> Tuple[List[str], List[str]]:
-    """Pull a few high-signal terms from RFP facts: issuer + keywords."""
-    issuers: List[str] = []
-    keywords: List[str] = []
-    if not isinstance(facts, dict):
-        return issuers, keywords
+def _as_meta(doc: Any) -> Dict[str, Any]:
+    meta = getattr(doc, "metadata", None)
+    if isinstance(meta, dict):
+        return meta
+    return {}
 
-    sol = facts.get("solicitation") or {}
-    issuer = sol.get("issuer") or sol.get("agency") or sol.get("entity") or ""
-    if issuer:
-        issuers.append(str(issuer))
 
-    # scrape a few blobs for keywords
-    for key in ("proposal_organization", "minimum_qualifications", "evaluation_and_selection", "submission_instructions"):
-        blob = facts.get(key) or {}
-        if isinstance(blob, dict):
-            for v in blob.values():
-                if isinstance(v, str):
-                    keywords.extend(_top_terms(v, max_terms=8))
-        elif isinstance(blob, list):
-            for v in blob:
-                if isinstance(v, str):
-                    keywords.extend(_top_terms(v, max_terms=8))
+def _mk_ev(doc: Any) -> Evidence:
+    txt = (_as_text(doc) or "").strip()
+    meta = _as_meta(doc)
+    src = str(meta.get("source", "") or meta.get("file", "") or "")
+    page = meta.get("page") or meta.get("page_number") or meta.get("pageno")
+    page_hint = f"p.{page}" if page else None
+    return Evidence(text=txt, source=src, page_hint=page_hint, why_relevant=None)
 
-    # dedupe & trim
-    seen = set()
-    out_kw = []
-    for t in keywords:
-        t = t.strip().lower()
-        if len(t) >= 3 and t not in seen:
-            seen.add(t)
-            out_kw.append(t)
-        if len(out_kw) >= 12:
+
+def _tokenize(s: str) -> List[str]:
+    return [t for t in (s or "").lower().replace("/", " ").replace("-", " ").split() if t]
+
+
+def _uniq(seq: Iterable[str]) -> List[str]:
+    out, seen = [], set()
+    for x in seq:
+        if x not in seen:
+            out.append(x); seen.add(x)
+    return out
+
+
+def _soft_overlap_score(query: str, text: str) -> float:
+    """Lightweight lexical overlap score in [0,1]."""
+    q = set(_tokenize(query))
+    if not q:
+        return 0.0
+    t = set(_tokenize(text))
+    inter = len(q & t)
+    return inter / max(1.0, len(q))
+
+
+def _score_snippet(query: str, text: str, meta: Dict[str, Any]) -> float:
+    """
+    Combine lexical overlap + gentle length shaping.
+    Keep this forgiving: we don't want to zero-out plausible hits.
+    """
+    base = _soft_overlap_score(query, text)
+    L = len(text)
+    # Gentle preference for mid-sized chunks
+    if L < 250:
+        base *= 0.9
+    elif L > 1800:
+        base *= 0.95
+    # Mild boost if page info present (often indicates PDF page chunking)
+    if "page" in meta or "page_number" in meta or "pageno" in meta:
+        base += 0.03
+    return float(max(0.0, min(1.0, base + 0.001)))
+
+
+def _dedup_key(ev: Evidence) -> str:
+    return (ev.source + "|" + (ev.text[:200] if ev.text else "")).lower()
+
+
+def _limit_per_source(evs: Sequence[Evidence], k: int, per_source: int = 3) -> List[Evidence]:
+    out: List[Evidence] = []
+    per: Dict[str, int] = {}
+    for e in evs:
+        cnt = per.get(e.source or "", 0)
+        if cnt < per_source:
+            out.append(e)
+            per[e.source or ""] = cnt + 1
+        if len(out) >= k:
             break
-
-    return issuers[:2], out_kw[:12]
-
-
-def _score_snippet(section_or_q: str, text: str, meta: Dict[str, Any], prefer_types: Optional[List[str]]) -> float:
-    """Lightweight score using cue words, doc_type, and length."""
-    score = 0.0
-    # tokens from section or question string
-    for token in _top_terms(section_or_q, max_terms=10):
-        if token in text.lower():
-            score += 0.5
-
-    doc_type = (meta.get("doc_type") or meta.get("doctype") or meta.get("type") or "").lower()
-    if prefer_types:
-        for pt in prefer_types:
-            if pt in doc_type:
-                score += 1.0
-
-    n = len(text)
-    if 300 <= n <= 1200:
-        score += 0.5
-    elif n > 1600:
-        score -= 0.2
-    return score
+    return out
 
 
-# ----------------------- planners & retrievers -----------------------
+# -------------------------- Store Adapters -----------------------------------
 
-def plan_sp_subqueries(section_label: str, facts: Optional[dict]) -> List[str]:
-    """Build 3–5 subqueries combining section cues + issuer + scope keywords."""
-    cues = _SECTION_CUES.get(section_label, section_label)
-    issuers, kw = _extract_facts_terms(facts)
-    base = f"{section_label} {cues}"
-
-    queries = [base]
-    if issuers:
-        queries.append(f"{base} {issuers[0]}")
-    if kw:
-        queries.append(f"{base} " + " ".join(kw[:4]))
-    if len(kw) > 4:
-        queries.append(f"{base} " + " ".join(kw[4:8]))
-    if issuers and len(kw) > 8:
-        queries.append(f"{base} {issuers[0]} " + " ".join(kw[8:12]))
-
-    # unique, non-empty
-    uniq, seen = [], set()
-    for q in queries:
-        qn = q.strip()
-        if qn and qn not in seen:
-            uniq.append(qn); seen.add(qn)
-    return uniq[:5]
+def _mmr_pass(store: Any, query: str, k: int) -> List[Evidence]:
+    """Try MMR for diversity; fall back gracefully."""
+    retr = None
+    try:
+        retr = store.as_retriever(
+            search_type="mmr",
+            search_kwargs={
+                "k": k,
+                "fetch_k": max(25, k * 5),
+                "lambda_mult": 0.3,
+            },
+        )
+    except Exception:
+        retr = None
+    if retr:
+        try:
+            docs = retr.get_relevant_documents(query)
+            return [_mk_ev(d) for d in docs or []]
+        except Exception:
+            return []
+    return []
 
 
-def plan_qa_subqueries(question: str, facts: Optional[dict]) -> List[str]:
-    """Plan subqueries for general Q&A (chat)."""
-    issuers, kw = _extract_facts_terms(facts)
-    base_terms = " ".join(_top_terms(question, max_terms=10)) or question
-    queries = [base_terms]
-    if issuers:
-        queries.append(f"{base_terms} {issuers[0]}")
-    if kw:
-        queries.append(base_terms + " " + " ".join(kw[:4]))
-    if len(kw) > 4:
-        queries.append(base_terms + " " + " ".join(kw[4:8]))
-    if issuers and len(kw) > 8:
-        queries.append(f"{base_terms} {issuers[0]} " + " ".join(kw[8:12]))
+def _sim_with_scores(store: Any, query: str, k: int) -> Tuple[List[Evidence], List[float]]:
+    """
+    Try similarity_search_with_score if available, else similarity_search (fake scores).
+    Some stores return distances (lower=better). We normalize to similarity (higher=better).
+    """
+    func = getattr(store, "similarity_search_with_score", None)
+    if func:
+        try:
+            pairs = func(query, k=k) or []
+            evs: List[Evidence] = []
+            sims: List[float] = []
+            for d, s in pairs:
+                evs.append(_mk_ev(d))
+                try:
+                    s = float(s)
+                except Exception:
+                    s = 0.0
+                # Convert distance→similarity if needed (heuristic)
+                sims.append(1.0 - s if s > 1.0 else s)
+            return evs, sims
+        except Exception:
+            pass
+    try:
+        docs = store.similarity_search(query, k=k) or []
+        return [_mk_ev(d) for d in docs], [1.0] * len(docs)
+    except Exception:
+        return [], []
 
-    uniq, seen = [], set()
-    for q in queries:
-        qn = q.strip()
-        if qn and qn not in seen:
-            uniq.append(qn); seen.add(qn)
-    return uniq[:5]
 
-
-def _gather(pool: List[Tuple[Evidence, float]], subqueries: List[str], section_or_q: str,
-            search_fn, k: int, prefer_types: Optional[List[str]]) -> List[Evidence]:
-    """Shared gatherer for SP or generic store."""
-    seen = set()
-    for q in subqueries:
-        docs = search_fn(q, k=max(6, k))
-        for d in docs or []:
-            txt = (getattr(d, "page_content", None) or getattr(d, "content", "") or "").strip()
-            if not txt:
-                continue
-            meta = getattr(d, "metadata", {}) or {}
-            src = meta.get("source") or meta.get("file") or ""
-            page = meta.get("page") or meta.get("page_number") or meta.get("pageno")
-            page_hint = f"p.{page}" if page else None
-
-            sig = (src + "|" + txt[:160]).lower()
+def _keyword_fallback(store: Any, query: str, limit: int) -> List[Evidence]:
+    """
+    If dense retrieval returns nothing, try simple keyword match.
+    Works with our FAISS adapter exposing get_all_texts(); otherwise no-op.
+    """
+    get_all = getattr(store, "get_all_texts", None)
+    if not callable(get_all):
+        return []
+    toks = [t for t in _tokenize(query) if len(t) >= 3]
+    if not toks:
+        return []
+    seen: set[str] = set()
+    out: List[Evidence] = []
+    for text, meta in get_all() or []:
+        low = (text or "").lower()
+        if any(t in low for t in toks):
+            src = str((meta or {}).get("source", ""))
+            ev = Evidence(text=(text or "")[:1600], source=src, page_hint=None, why_relevant=None)
+            sig = _dedup_key(ev)
             if sig in seen:
                 continue
             seen.add(sig)
+            out.append(ev)
+            if len(out) >= limit:
+                break
+    return out
 
-            sc = _score_snippet(section_or_q, txt, meta, prefer_types)
-            why = ""
-            doc_type = (meta.get("doc_type") or "").lower()
-            if prefer_types and any(pt in doc_type for pt in prefer_types):
-                why = f"Matches preferred type: {doc_type}"
-            elif "sla" in txt.lower() or "kpi" in txt.lower():
-                why = "Contains SLA/KPI language"
-            elif "role" in txt.lower() or "responsibilit" in txt.lower():
-                why = "Mentions roles/responsibilities"
 
-            pool.append((Evidence(text=txt[:1200], source=src, score=sc, why_relevant=why, page_hint=page_hint), sc))
-    # rank and diversify by source
-    pool.sort(key=lambda x: x[1], reverse=True)
-    ranked = [ev for ev, _ in pool]
-    final: List[Evidence] = []
-    by_src = set()
-    for ev in ranked:
-        key = ev.source or ""
-        if key and key not in by_src:
-            final.append(ev); by_src.add(key)
-        elif not key:
-            final.append(ev)
-        if len(final) >= k:
-            break
+def _cascade_search(store: Any, query: str, k: int) -> List[Evidence]:
+    """
+    Multi-pass retrieval:
+      1) MMR (diverse)
+      2) Similarity top-k
+      3) Widened similarity if top looks weak
+      4) Keyword fallback
+    """
+    # 1) MMR
+    ev_mmr = _mmr_pass(store, query, k=max(6, k))
+    if ev_mmr:
+        base = ev_mmr
+    else:
+        base = []
+
+    # 2) Similarity
+    ev_sim, scores = _sim_with_scores(store, query, k=max(10, k))
+    base.extend(ev_sim)
+
+    # If similarity set seems thin, widen
+    def _weak(scores_: List[float]) -> bool:
+        return not scores_ or (scores_[0] < 0.2)
+
+    if _weak(scores):
+        ev_wide, _ = _sim_with_scores(store, query, k=max(24, k * 4))
+        base.extend(ev_wide)
+
+    # 3) Dedup
+    deduped: List[Evidence] = []
+    seen: set[str] = set()
+    for e in base:
+        if not e or not (e.text or "").strip():
+            continue
+        sig = _dedup_key(e)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        # trim long text for UI
+        e.text = (e.text or "")[:1600]
+        deduped.append(e)
+
+    # 4) If still empty, keyword fallback
+    if not deduped:
+        deduped = _keyword_fallback(store, query, limit=max(10, k)) or []
+
+    # Score & rank
+    ranked = sorted(
+        deduped,
+        key=lambda ev: _score_snippet(query, ev.text or "", {"page_hint": ev.page_hint}),
+        reverse=True,
+    )
+
+    # Cap per source, total k
+    return _limit_per_source(ranked, k=k, per_source=3)
+
+
+# -------------------------- Query Expansion ----------------------------------
+
+def _extract_terms_from_facts(rfp_facts: Optional[dict]) -> List[str]:
+    """
+    Pull a few useful terms from facts to enrich the query slightly.
+    We keep this conservative to avoid over-filtering.
+    """
+    if not isinstance(rfp_facts, dict):
+        return []
+    keys = [
+        "solicitation", "title", "project_name", "scope", "services", "department",
+        "agency", "contract_and_compliance", "evaluation_and_selection"
+    ]
+    terms: List[str] = []
+    for k in keys:
+        v = rfp_facts.get(k)
+        if isinstance(v, str) and v.strip():
+            terms.append(v.strip())
+        elif isinstance(v, dict):
+            for vv in v.values():
+                if isinstance(vv, str) and vv.strip():
+                    terms.append(vv.strip())
+        elif isinstance(v, list):
+            for vv in v:
+                if isinstance(vv, str) and vv.strip():
+                    terms.append(vv.strip())
+    # keep only a handful to avoid overspecializing
+    flat = " ".join(terms)
+    toks = _tokenize(flat)
+    # prefer longer tokens
+    toks = [t for t in toks if len(t) >= 5]
+    return _uniq(toks)[:8]
+
+
+def _expand_queries(question: str, rfp_facts: Optional[dict]) -> List[str]:
+    # Base question plus 1–2 slight enrichments
+    out = [question.strip()]
+    extra = _extract_terms_from_facts(rfp_facts)
+    if extra:
+        out.append(f"{question} " + " ".join(extra[:4]))
+    return _uniq([q for q in out if q])
+
+
+# ------------------------------ Public API -----------------------------------
+
+def get_store_evidence(store: Any, question: str, rfp_facts: Optional[dict] = None, k: int = 6) -> List[Evidence]:
+    """
+    Evidence from the uploaded-docs store (Chroma in-memory or FAISS).
+    """
+    subqs = _expand_queries(question, rfp_facts)
+    pool: List[Evidence] = []
+    seen: set[str] = set()
+
+    for q in subqs:
+        evs = _cascade_search(store, q, k=max(10, k))
+        for ev in evs:
+            sig = _dedup_key(ev)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            pool.append(ev)
+
+    # Re-rank on the original question to avoid bias from expansions
+    ranked = sorted(
+        pool,
+        key=lambda ev: _score_snippet(question, ev.text or "", {"page_hint": ev.page_hint}),
+        reverse=True,
+    )
+
+    final = _limit_per_source(ranked, k=k, per_source=3)
+    for e in final:
+        if not e.why_relevant:
+            e.why_relevant = "Relevant to your question by semantic/keyword match."
     return final
 
 
-def get_sp_evidence(section_label: str, facts: Optional[dict], cfg, k: int = 8, prefer_types: Optional[List[str]] = None) -> List[Evidence]:
-    """Evidence pack for a dynamic section (SharePoint store)."""
+def get_sp_evidence_for_question(question: str, rfp_facts: Optional[dict], cfg, k: int = 6) -> List[Evidence]:
+    """
+    Evidence from the SharePoint store (persistent Chroma when possible; FAISS fallback).
+    """
+    # Local import to avoid cycles
     try:
-        vs = init_sharepoint_store(cfg)
-    except Exception:
-        return []
-    subqueries = plan_sp_subqueries(section_label, facts)
-    prefer = prefer_types or _SECTION_PREFER_TYPES.get(section_label, [])
-    return _gather([], subqueries, section_label, lambda q, k: _similarity_search(vs, q, k), k, prefer)
+        from modules.vectorstore import init_sharepoint_store
+    except ModuleNotFoundError:
+        from vectorstore import init_sharepoint_store  # type: ignore
 
+    store = init_sharepoint_store(cfg)
 
-def get_sp_evidence_for_question(question: str, facts: Optional[dict], cfg, k: int = 8) -> List[Evidence]:
-    """Evidence pack for general Q&A over SharePoint store."""
-    try:
-        vs = init_sharepoint_store(cfg)
-    except Exception:
-        return []
-    subqueries = plan_qa_subqueries(question, facts)
-    return _gather([], subqueries, question, lambda q, k: _similarity_search(vs, q, k), k, prefer_types=None)
+    subqs = _expand_queries(question, rfp_facts)
+    pool: List[Evidence] = []
+    seen: set[str] = set()
 
+    for q in subqs:
+        evs = _cascade_search(store, q, k=max(10, k))
+        for ev in evs:
+            sig = _dedup_key(ev)
+            if sig in seen:
+                continue
+            seen.add(sig)
+            pool.append(ev)
 
-def get_store_evidence(store, question: str, facts: Optional[dict], k: int = 8) -> List[Evidence]:
-    """Evidence pack for Q&A against any given vector store (e.g., uploaded RFP store)."""
-    if store is None:
-        return []
-    subqueries = plan_qa_subqueries(question, facts)
-    return _gather([], subqueries, question, lambda q, k: _similarity_search(store, q, k), k, prefer_types=None)
+    ranked = sorted(
+        pool,
+        key=lambda ev: _score_snippet(question, ev.text or "", {"page_hint": ev.page_hint}),
+        reverse=True,
+    )
+    final = _limit_per_source(ranked, k=k, per_source=3)
+    for e in final:
+        if not e.why_relevant:
+            e.why_relevant = "Matches policy/topic terms in your question."
+    return final
