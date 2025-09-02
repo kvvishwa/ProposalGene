@@ -92,9 +92,12 @@ ss.setdefault("ocr_enable", True); ss.setdefault("ocr_used_last", False); ss.set
 ss.setdefault("dyn_recos_preview", {}); ss.setdefault("out_draft_bytes", None); ss.setdefault("out_recs_bytes", None); ss.setdefault("last_generation_meta", {})
 ss.setdefault("gen_tpl", "— choose a template —"); ss.setdefault("gen_static_sel", []); ss.setdefault("gen_dyn_sel", [])
 ss.setdefault("gen_use_anchors", True); ss.setdefault("gen_add_headings", False); ss.setdefault("gen_include_sources", True)
-ss.setdefault("gen_top_k", 6); ss.setdefault("gen_rec_style", "bullets"); ss.setdefault("gen_per_section_k", 0)
+ss.setdefault("gen_top_k", 6);  
 ss.setdefault("gen_page_breaks", True); ss.setdefault("gen_add_toc", True); ss.setdefault("gen_tpl_has_headings", True)
 ss.setdefault("pending_blueprint", None)
+
+ss.setdefault("gen_rec_style", "paragraphs")      # was "bullets"
+ss.setdefault("gen_per_section_k", 25)            # was 0
 
 # (chat states for SP & RFP chats)
 ss.setdefault("sp_chat_messages", []); ss.setdefault("sp_chat_last_evidence", [])
@@ -233,7 +236,7 @@ def render_sharepoint_chat(cfg, oai):
     standalone_q = _rewrite_query_with_history(oai, cfg, ss.sp_chat_messages, user_q)
 
     # Retrieve evidence
-    k = top_k if lenient else max(6, top_k // 2)
+    k = top_k if lenient else max(10, min(25, top_k // 2))
     evs = get_sp_evidence_for_question(standalone_q, ss.get("rfp_facts"), cfg, k=k) or []
     ss.sp_chat_last_evidence = evs
     context_block = _build_context_block(evs)
@@ -520,8 +523,8 @@ with tab_understanding:
                     static_paths = {sec: str((STATIC_DIR / static_map_now[sec]).resolve()) for sec in available_static if static_map_now.get(sec)}
                     opts = BuildOptions(
                         use_anchors=True, template_has_headings=True, page_breaks=True,
-                        include_sources=True, add_toc=True, rec_style="bullets",
-                        top_k_default=6, top_k_per_section=0, tone="Professional",
+                        include_sources=True, add_toc=True, rec_style="paragraphs",
+                        top_k_default=6, top_k_per_section=25, tone="Professional",
                         static_heading_mode="demote", facts=ss.rfp_facts or {}
                     )
                     with st.spinner("Generating draft from current facts & template…"):
@@ -572,6 +575,10 @@ with tab_generation:
 
     static_map = load_static_map(STATIC_MAP_FILE)
     available_static = [sec for sec in STATIC_SECTIONS if static_map.get(sec)]
+
+    if not ss.get("gen_static_sel"):
+        ss.gen_static_sel = available_static
+
     st.markdown("#### Static sections (from your mapped .docx)")
     _ = st.multiselect("Select static sections", options=available_static, default=ss.get("gen_static_sel", available_static), key="gen_static_sel")
 
@@ -590,8 +597,8 @@ with tab_generation:
     _ = st.checkbox("Place at template anchors (SDT/Bookmark/Marker)", value=ss.get("gen_use_anchors", True), key="gen_use_anchors")
     _ = st.checkbox("Append 'Sources' line for dynamic sections", value=ss.get("gen_include_sources", True), key="gen_include_sources")
     _ = st.slider("Context Top-K (SharePoint)", min_value=3, max_value=12, value=int(ss.get("gen_top_k", 6)), step=1, key="gen_top_k")
-    _ = st.selectbox("Recommendations style", options=["bullets","paragraphs"], index=["bullets","paragraphs"].index(ss.get("gen_rec_style","bullets")), key="gen_rec_style")
-    _ = st.number_input("Per-section Top-K override (0 = use slider)", min_value=0, max_value=20, value=int(ss.get("gen_per_section_k", 0)), step=1, key="gen_per_section_k")
+    _ = st.selectbox("Recommendations style", options=["bullets","paragraphs"], index=["bullets","paragraphs"].index(ss.get("gen_rec_style","paragraphs")), key="gen_rec_style")
+    _ = st.number_input("Per-section Top-K override (0 = use slider)", min_value=0, max_value=50, value=int(ss.get("gen_per_section_k", 25)), step=1, key="gen_per_section_k")
     _ = st.checkbox("Page break between sections", value=ss.get("gen_page_breaks", True), key="gen_page_breaks")
     _ = st.checkbox("Insert Table of Contents at top", value=ss.get("gen_add_toc", True), key="gen_add_toc")
     _ = st.checkbox("Template has headings at anchors (don’t add heading in dynamic content)", value=ss.get("gen_tpl_has_headings", True), key="gen_tpl_has_headings")
