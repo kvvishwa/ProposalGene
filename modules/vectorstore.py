@@ -1,14 +1,24 @@
-# modules/vectorstore.py  — Local+ (Chroma-only) with small recall upgrades
+# modules/vectorstore.py  — Local+ (Chroma-only) with robust persistence + recall upgrades
 import os
-from pathlib import Path
-from typing import List, Optional, Iterable
+import shutil
 import logging
 import json, hashlib, time
+from pathlib import Path
+from typing import List, Optional, Iterable
+
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 log = logging.getLogger(__name__)
+
+# --- optional, for hardened persistence ---
+try:
+    from chromadb import PersistentClient
+    from chromadb.config import Settings
+except Exception:  # chromadb older / not present
+    PersistentClient = None  # type: ignore
+    Settings = None  # type: ignore
 
 # --- robust local imports ---
 try:
@@ -44,7 +54,15 @@ DEF_VEC_DIR = DEF_BASE / "vectorstore"
 EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
+# ---------------- path helpers ----------------
+def _vec_root(cfg) -> Path:
+    return Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR)).resolve()
 
+def _vec_dir_for(cfg, kind: str) -> Path:
+    base = _vec_root(cfg)
+    p = base / ("uploaded" if kind == "uploaded" else "sharepoint")
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 def _sp_vec_dir(cfg) -> Path:
     return _vec_dir_for(cfg, "sharepoint")
@@ -52,29 +70,31 @@ def _sp_vec_dir(cfg) -> Path:
 def _sp_manifest_path(cfg) -> Path:
     return _sp_vec_dir(cfg) / "manifest.json"
 
+
+# ---------------- SP manifest helpers ----------------
 def _manifest_load(cfg) -> dict:
     p = _sp_manifest_path(cfg)
     if p.exists():
-        try: return json.loads(p.read_text())
-        except Exception: return {}
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            return {}
     return {}
 
 def _manifest_save(cfg, m: dict):
-    _sp_manifest_path(cfg).write_text(json.dumps(m, indent=2))
+    try:
+        _sp_manifest_path(cfg).write_text(json.dumps(m, indent=2))
+    except Exception:
+        pass
 
 def _chunk_id(source: str, page: int | None, idx: int) -> str:
     base = f"{source}|p{page if page is not None else '-'}|{idx}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
 
-def _vec_dir_for(cfg, kind: str) -> Path:
-    base = Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR))
-    p = base / ("uploaded" if kind == "uploaded" else "sharepoint")
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
+# ---------------- embeddings & splitting ----------------
 def _embeddings():
-    # UPGRADE 1: normalize embeddings for more consistent cosine scoring
+    # normalize embeddings for more consistent cosine scoring
     return HuggingFaceEmbeddings(
         model_name=EMB_MODEL,
         model_kwargs={"device": "cpu"},
@@ -84,57 +104,107 @@ def _embeddings():
 def _text_splitter(cfg):
     return RecursiveCharacterTextSplitter(
         chunk_size=getattr(cfg, "CHUNK_SIZE", 1000),
-        # OPTIONAL: bump to 160–200 for better POC/email recall
+        # bump overlap for better POC/email recall if desired
         chunk_overlap=getattr(cfg, "CHUNK_OVERLAP", 120),
-        separators=["\n\n", "\n", " ", ""]
+        separators=["\n\n", "\n", " ", ""],
     )
 
-def _derive_sp_category(path_like: str) -> str:
-    rp = (path_like or "").lower()
-    if "staff augmentation-it professional services" in rp:
-        return "Staff Augmentation-IT Professional Services"
-    return "Other"
+
+# ---------------- hardened Chroma init ----------------
+def _make_persistent_client(path: Path):
+    """Return a PersistentClient if available; else None."""
+    if PersistentClient is None:
+        return None
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        settings = Settings(is_persistent=True, allow_reset=True, anonymized_telemetry=False)  # type: ignore
+        client = PersistentClient(path=str(path), settings=settings)  # type: ignore
+        try:
+            client.heartbeat()
+        except Exception as hb:
+            log.debug("Chroma heartbeat warn: %s", hb)
+        return client
+    except Exception as e:
+        log.warning("Failed to create PersistentClient (%s). Falling back to persist_directory.", e)
+        return None
+
+def _init_store(collection_name: str, path: Path) -> Chroma:
+    """
+    Hardened initializer:
+      - Prefer chromadb.PersistentClient (stable schema init).
+      - On 'no such table: tenants' / 'database error', wipe the folder and recreate.
+      - Fall back to persist_directory path if PersistentClient unavailable.
+    """
+    client = _make_persistent_client(path)
+    def _construct(client_or_path):
+        if client_or_path is None:
+            return Chroma(collection_name=collection_name, persist_directory=str(path), embedding_function=_embeddings())
+        return Chroma(client=client_or_path, collection_name=collection_name, embedding_function=_embeddings())
+
+    try:
+        store = _construct(client)
+        return store
+    except Exception as e:
+        msg = str(e).lower()
+        if ("no such table: tenants" in msg) or ("database error" in msg):
+            log.warning("[VectorStore] schema missing/corrupt at %s; repairing…", path)
+            shutil.rmtree(path, ignore_errors=True)
+            path.mkdir(parents=True, exist_ok=True)
+            client = _make_persistent_client(path)
+            try:
+                # if we do have a client, a reset ensures clean meta
+                if client is not None:
+                    try:
+                        client.reset()  # type: ignore
+                    except Exception:
+                        pass
+                store = _construct(client)
+                return store
+            except Exception as e2:
+                # last resort: fall back purely to persist_directory param
+                log.warning("[VectorStore] PersistentClient path failed after repair (%s). Using persist_directory.", e2)
+                store = Chroma(collection_name=collection_name, persist_directory=str(path), embedding_function=_embeddings())
+                return store
+        # unknown error: re-raise
+        raise
+
 
 def init_uploaded_store(cfg) -> Chroma:
     p = _vec_dir_for(cfg, "uploaded")
-    store = Chroma(collection_name="uploaded_docs", persist_directory=str(p), embedding_function=_embeddings())
+    store = _init_store("uploaded_docs", p)
     log.info("[VectorStore] uploaded backend = Chroma (persistent) at %s", str(p))
     return store
 
 def init_sharepoint_store(cfg) -> Chroma:
     p = _vec_dir_for(cfg, "sharepoint")
-    store = Chroma(collection_name="sharepoint_docs", persist_directory=str(p), embedding_function=_embeddings())
+    store = _init_store("sharepoint_docs", p)
     log.info("[VectorStore] sharepoint backend = Chroma (persistent) at %s", str(p))
     return store
 
+
+# ---------------- wipes (full recursive) ----------------
 def wipe_up_store(cfg):
     p = _vec_dir_for(cfg, "uploaded")
-    if p.exists():
-        for f in p.glob("**/*"):
-            try: f.unlink()
-            except Exception: pass
-        try: p.rmdir()
-        except Exception: pass
+    shutil.rmtree(p, ignore_errors=True)
+    p.mkdir(parents=True, exist_ok=True)
 
 def wipe_sp_store(cfg):
     p = _vec_dir_for(cfg, "sharepoint")
-    if p.exists():
-        for f in p.glob("**/*"):
-            try: f.unlink()
-            except Exception: pass
-        try: p.rmdir()
-        except Exception: pass
+    shutil.rmtree(p, ignore_errors=True)
+    p.mkdir(parents=True, exist_ok=True)
 
+
+# ---------------- ingestion: uploaded ----------------
 def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) -> List[str]:
     """
     Ingest uploaded files into the provided Chroma store.
-    UPGRADE 2: page-aware PDF indexing (if pdf_text_with_pages is available)
-    UPGRADE 3: warn when no text is extracted (scanned PDFs)
+    - Page-aware PDF indexing (if pdf_text_with_pages is available)
+    - Warn when no text is extracted (scanned PDFs)
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
-        chunk_overlap=120,            # keep your default; tune if needed
-        separators=["\n\n", "\n", " ", ""]
+        chunk_overlap=120,
+        separators=["\n\n", "\n", " ", ""],
     )
     added: List[str] = []
     for p in paths:
@@ -159,12 +229,19 @@ def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) ->
                 chunks = splitter.split_text(text)
                 metadatas = [{"source": p} for _ in chunks]
                 store.add_texts(chunks, metadatas=metadatas)
-            store.persist()
+            # ensure on-disk persistence after each file
+            try:
+                store.persist()
+            except Exception:
+                pass
             added.append(p)
         except Exception as ex:
             log.warning("[Ingest] Skipped %s: %s", p, ex)
             continue
     return added
+
+
+# ---------------- ingestion: sharepoint (append-only, de-dupe) ----------------
 def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str]:
     """
     Download files from cfg.SP_SITE_URL and index them into Chroma.
@@ -174,17 +251,15 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
     Requires: init_sharepoint_store, _text_splitter, extract_text, _derive_sp_category,
               and optional _pdf_pages already defined in this module.
     """
-    # --- local imports/helpers to keep this function drop-in ---
-    import os, json, hashlib, time
+    import os
 
     def _vec_dir_for_sharepoint() -> Path:
-        # reuse your existing vec dir resolution
         return _vec_dir_for(cfg, "sharepoint")
 
     def _manifest_path() -> Path:
         return _vec_dir_for_sharepoint() / "manifest.json"
 
-    def _manifest_load() -> dict:
+    def _manifest_load_local() -> dict:
         p = _manifest_path()
         if p.exists():
             try:
@@ -193,18 +268,14 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
                 return {}
         return {}
 
-    def _manifest_save(m: dict):
+    def _manifest_save_local(m: dict):
         p = _manifest_path()
         try:
             p.write_text(json.dumps(m, indent=2))
         except Exception:
             pass
 
-    def _chunk_id(source: str, page: Optional[int], idx: int) -> str:
-        """
-        Stable id per (file path, page number, chunk index) so re-indexing the same
-        file version overwrites the same ids (Chroma dedupe) instead of duplicating.
-        """
+    def _chunk_id_local(source: str, page: Optional[int], idx: int) -> str:
         base = f"{source}|p{page if page is not None else '-'}|{idx}"
         return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
@@ -233,18 +304,16 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
     vec_dir.mkdir(parents=True, exist_ok=True)
 
     # manifest remembers which exact file versions we already indexed
-    manifest = _manifest_load()
+    manifest = _manifest_load_local()
     site_url = getattr(cfg, "SP_SITE_URL", None)
 
     for local_path in local_files:
         try:
             # Build a stable "file version" key (path + mtime + size).
-            # If your fetcher exposes a Graph driveItem id + lastModified, prefer that.
             try:
                 st = os.stat(local_path)
                 file_key = f"{local_path}|{int(st.st_mtime)}|{st.st_size}"
             except Exception:
-                # fallback: path only (less robust, but still helps)
                 file_key = f"{local_path}"
 
             # Skip if we've already indexed this exact file version
@@ -272,8 +341,7 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
                         "sp_site": site_url,
                         "page": pg
                     } for _ in chunks]
-                    ids = [_chunk_id(local_path, pg, i) for i, _ in enumerate(chunks)]
-                    # Pass stable ids so re-indexing overwrites (dedupe)
+                    ids = [_chunk_id_local(local_path, pg, i) for i, _ in enumerate(chunks)]
                     sp_store.add_texts(chunks, metadatas=metadatas, ids=ids)
 
             else:
@@ -289,10 +357,14 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
                     "sp_category": cat,
                     "sp_site": site_url
                 } for _ in chunks]
-                ids = [_chunk_id(local_path, None, i) for i, _ in enumerate(chunks)]
+                ids = [_chunk_id_local(local_path, None, i) for i, _ in enumerate(chunks)]
                 sp_store.add_texts(chunks, metadatas=metadatas, ids=ids)
 
-            sp_store.persist()
+            try:
+                sp_store.persist()
+            except Exception:
+                pass
+
             # Remember that this exact file version is now ingested
             manifest[file_key] = {
                 "path": local_path,
@@ -304,5 +376,5 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
             log.warning("[SP Ingest] Skipped %s: %s", local_path, ex)
             continue
 
-    _manifest_save(manifest)
+    _manifest_save_local(manifest)
     return local_files
