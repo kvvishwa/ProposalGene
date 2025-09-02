@@ -12,13 +12,11 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 log = logging.getLogger(__name__)
 
-# --- optional, for hardened persistence ---
+# --- optional: hardened persistence via chromadb.PersistentClient ---
 try:
-    from chromadb import PersistentClient
-    from chromadb.config import Settings
-except Exception:  # chromadb older / not present
+    from chromadb import PersistentClient  # Settings import is NOT used (not available in some versions)
+except Exception:
     PersistentClient = None  # type: ignore
-    Settings = None  # type: ignore
 
 # --- robust local imports ---
 try:
@@ -109,23 +107,31 @@ def _text_splitter(cfg):
         separators=["\n\n", "\n", " ", ""],
     )
 
+def _derive_sp_category(path_like: str) -> str:
+    rp = (path_like or "").lower()
+    if "staff augmentation-it professional services" in rp:
+        return "Staff Augmentation-IT Professional Services"
+    return "Other"
+
 
 # ---------------- hardened Chroma init ----------------
 def _make_persistent_client(path: Path):
     """Return a PersistentClient if available; else None."""
     if PersistentClient is None:
         return None
-    path.mkdir(parents=True, exist_ok=True)
     try:
-        settings = Settings(is_persistent=True, allow_reset=True, anonymized_telemetry=False)  # type: ignore
-        client = PersistentClient(path=str(path), settings=settings)  # type: ignore
+        path.mkdir(parents=True, exist_ok=True)
+        client = PersistentClient(path=str(path))  # no Settings dependency
+        # best-effort heartbeat (not all builds expose it)
         try:
-            client.heartbeat()
-        except Exception as hb:
-            log.debug("Chroma heartbeat warn: %s", hb)
+            hb = getattr(client, "heartbeat", None)
+            if callable(hb):
+                client.heartbeat()
+        except Exception:
+            pass
         return client
     except Exception as e:
-        log.warning("Failed to create PersistentClient (%s). Falling back to persist_directory.", e)
+        log.warning("PersistentClient init failed (%s). Falling back to persist_directory.", e)
         return None
 
 def _init_store(collection_name: str, path: Path) -> Chroma:
@@ -136,6 +142,7 @@ def _init_store(collection_name: str, path: Path) -> Chroma:
       - Fall back to persist_directory path if PersistentClient unavailable.
     """
     client = _make_persistent_client(path)
+
     def _construct(client_or_path):
         if client_or_path is None:
             return Chroma(collection_name=collection_name, persist_directory=str(path), embedding_function=_embeddings())
@@ -146,14 +153,14 @@ def _init_store(collection_name: str, path: Path) -> Chroma:
         return store
     except Exception as e:
         msg = str(e).lower()
-        if ("no such table: tenants" in msg) or ("database error" in msg):
+        if ("no such table" in msg and "tenants" in msg) or ("database error" in msg):
             log.warning("[VectorStore] schema missing/corrupt at %s; repairing…", path)
             shutil.rmtree(path, ignore_errors=True)
             path.mkdir(parents=True, exist_ok=True)
             client = _make_persistent_client(path)
             try:
-                # if we do have a client, a reset ensures clean meta
-                if client is not None:
+                # Some client builds expose reset(); ignore if absent
+                if client is not None and hasattr(client, "reset"):
                     try:
                         client.reset()  # type: ignore
                     except Exception:
@@ -247,12 +254,7 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
     Download files from cfg.SP_SITE_URL and index them into Chroma.
     APPEND-ONLY with de-dup: re-ingesting the same file version won't duplicate chunks.
     Adds sp_site metadata and (if available) per-page PDF metadata.
-
-    Requires: init_sharepoint_store, _text_splitter, extract_text, _derive_sp_category,
-              and optional _pdf_pages already defined in this module.
     """
-    import os
-
     def _vec_dir_for_sharepoint() -> Path:
         return _vec_dir_for(cfg, "sharepoint")
 
