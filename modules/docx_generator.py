@@ -225,3 +225,38 @@ def normalize_static_section_heading(doc: _Doc, mode: str = "demote") -> None:
                 p0.style = doc.styles.get(new_name, p0.style)
         except Exception:
             pass
+
+
+# --- Compat shim: insert_toc (so old imports don't break) ---
+def insert_toc(doc, title: str = "Table of Contents", heading_level: int = 1):
+    """
+    Minimal TOC field. Word will populate it on first open (Update Field/F9).
+    Keeps the function name expected by older code paths.
+    """
+    try:
+        # Prefer a heading style; fall back gracefully
+        try:
+            style_name = f"Heading {heading_level}"
+        except Exception:
+            style_name = "Heading 1"
+
+        # use the existing helper in this module
+        add_heading_paragraph(doc, title, style_name=style_name)
+
+        # Insert TOC field
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        p = doc.add_paragraph()
+        fld = OxmlElement("w:fldSimple")
+        fld.set(qn("w:instr"), 'TOC \\o "1-3" \\h \\z \\u')
+        p._p.append(fld)
+    except Exception:
+        # Fail-closed: just add a plain heading if field insertion fails
+        try:
+            add_heading_paragraph(doc, title, style_name="Heading 1")
+        except Exception:
+            doc.add_paragraph(title)
+
+
+def insert_table_of_contents(doc, title: str = "Table of Contents", heading_level: int = 1):
+    return insert_toc(doc, title=title, heading_level=heading_level)

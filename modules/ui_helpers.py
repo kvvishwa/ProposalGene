@@ -69,7 +69,7 @@ def _prov_expander(label: str, prov_list: list):
                     st.code(str(p)[:1000], language="text")
 
 
-def render_rfp_facts(facts: dict, show_provenance: bool = True):
+def render_rfp_facts(facts: dict, show_provenance: bool = False):
     """
     Pretty renders the structured facts into cards/tables.
     If show_provenance=True, adds small expanders with evidence under each section.

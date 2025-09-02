@@ -633,3 +633,75 @@ def extract_rfp_facts_from_raw_text(raw_text: str, oai, cfg, return_raw: bool = 
         _add_missing_notes(data)
 
     return (data, out) if return_raw else data
+
+
+
+def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
+    """
+    Deterministic POC miner: pull likely contact snippets and extract emails/phones.
+    Returns a list of {"name":?, "email":?, "phone":?, "notes":?, "primary": False}
+    """
+    seeds = [
+        "contact email", "point of contact", "all communications", "procurement contact",
+        "questions concerning", "rfp contact", "issuing office contact"
+    ]
+    seen_sig = set()
+    found = []
+    email_rx = _re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", _re.I)
+    phone_rx = _re.compile(r"(?:\+?\d[\d\-\s().]{7,}\d)")
+    name_rx  = _re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b")  # crude
+
+    for s in seeds:
+        try:
+            docs = store.similarity_search(s, k=k) or []
+        except Exception:
+            docs = []
+        for d in docs:
+            txt = (getattr(d, "page_content", "") or getattr(d, "content", "") or "")[:1200]
+            if not txt or not txt.strip():
+                continue
+            sig = _re.sub(r"\s+", " ", txt[:200]).lower()
+            if sig in seen_sig:
+                continue
+            seen_sig.add(sig)
+
+            emails = email_rx.findall(txt)
+            phones = phone_rx.findall(txt)
+            # Guess a name near 'contact' or before an email occurrence
+            name = ""
+            m = _re.search(r"(?:contact|communications|to:)\s*[:\-]?\s*(.+)$", txt, _re.I | _re.M)
+            if m:
+                line = m.group(1)[:120]
+                nm = name_rx.search(line)
+                if nm:
+                    name = nm.group(1).strip()
+            if not name and emails:
+                # look backwards a bit from the first email
+                pos = txt.find(emails[0])
+                snip = txt[max(0, pos-80):pos]
+                nm = name_rx.search(snip)
+                if nm:
+                    name = nm.group(1).strip()
+
+            entry = {
+                "primary": False,
+                "name": name,
+                "title": "",
+                "email": emails[0] if emails else "",
+                "phone": phones[0] if phones else "",
+                "address": "",
+                "notes": "mined from keyword context" if (emails or phones) else "",
+            }
+            if entry["email"] or entry["phone"]:
+                found.append(entry)
+
+    # de-dupe by (email, phone)
+    uniq = []
+    seen = set()
+    for e in found:
+        key = (e["email"], e["phone"])
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(e)
+    return uniq[:4]

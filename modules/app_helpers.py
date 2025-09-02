@@ -27,6 +27,100 @@ from modules.vectorstore import (
 # Filesystem & persistence
 # ---------------------------------------------------------------------
 
+def _derive_cues_from_prompt(prompt: str) -> List[str]:
+    """
+    If the prompt includes 'Context focus cues:' (your sectional prompts do),
+    use that line as high-signal retrieval seeds. Otherwise return [].
+    """
+    if not prompt:
+        return []
+    m = re.search(r'^\s*Context\s+focus\s+cues:\s*(.+)$', prompt, flags=re.I | re.M)
+    if not m:
+        return []
+    # split on commas/semicolons, keep short phrases
+    raw = m.group(1)
+    cues = [c.strip() for c in re.split(r'[;,]', raw) if c.strip()]
+    return cues[:6]
+
+def _gather_understanding_context(store: Any, prompt: str, base_k: int = 8) -> Tuple[str, List[str]]:
+    """
+    Build a big, diverse context for the extractor using multiple compact cues.
+    Uses the same tolerant cascade used in SharePoint chat.
+    """
+    try:
+        try:
+            from modules.sp_retrieval import get_store_evidence
+        except ModuleNotFoundError:
+            from sp_retrieval import get_store_evidence  # type: ignore
+    except Exception:
+        get_store_evidence = None
+
+    # 1) cues from prompt (sectional calls provide these)
+    cues = _derive_cues_from_prompt(prompt)
+
+    # 2) standard understanding cues (cover all sections)
+    std = [
+        "contact email phone procurement communications",
+        "submission instructions portal copies labeling registration format",
+        "schedule due date deadlines pre-bid site visit Q&A addendum award",
+        "evaluation criteria weighting selection process BAFO negotiations protest",
+        "minimum qualifications insurance bonding certification years experience",
+        "proposal organization page limits required sections forms pricing",
+        "contract terms compliance privacy security scope of work",
+    ]
+    # prepend prompt-derived cues if any, then fallback to std list
+    queries = cues + std
+
+    pool = []
+    seen = set()
+    for q in queries:
+        evs = []
+        if get_store_evidence is not None:
+            try:
+                evs = get_store_evidence(store, question=q, rfp_facts=None, k=max(8, base_k))
+            except Exception:
+                evs = []
+        # light fallback if cascade not available
+        if not evs:
+            try:
+                docs = store.similarity_search(q, k=max(6, base_k))
+            except Exception:
+                docs = []
+            for d in docs or []:
+                txt = getattr(d, "page_content", "") or getattr(d, "content", "") or ""
+                meta = getattr(d, "metadata", {}) or {}
+                src  = meta.get("source", "") or meta.get("file", "") or ""
+                if not txt.strip():
+                    continue
+                sig = (src + "|" + txt[:200]).lower()
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                pool.append(type("E", (), {"text": txt[:1800], "source": src, "page_hint": meta.get("page")}))  # simple shim
+                continue
+
+        for e in evs or []:
+            sig = ((getattr(e, "source", "") or "") + "|" + ((getattr(e, "text", "") or "")[:200])).lower()
+            if sig in seen or not (getattr(e, "text", "") or "").strip():
+                continue
+            seen.add(sig)
+            pool.append(e)
+
+        if len(pool) >= 60:  # enough context
+            break
+
+    if not pool:
+        return "", []
+
+    # Build joined context & sources
+    context = "\n\n---\n\n".join((getattr(e, "text", "") or "")[:1800] for e in pool[:60])
+    sources = []
+    for e in pool:
+        src = getattr(e, "source", "") or ""
+        if src and src not in sources:
+            sources.append(src)
+    return context, sources
+
 
 
 def _derive_retrieval_query(prompt: str) -> str:
@@ -239,57 +333,62 @@ def get_sp_docs_any(cfg, query: str, k: int = 6) -> Tuple[List[Any], List[str]]:
     return (docs, sources)
 # modules/app_helpers.py  (drop-in replacement of rag_answer_uploaded)
 
+# --- REPLACE your existing rag_answer_uploaded with this ---
+def rag_answer_uploaded(up_store: Any, oai, cfg, prompt: str, top_k: int = 12) -> Tuple[str, List[str]]:
+    """
+    Cue-driven, lenient RAG: assemble a broad multi-query context first, then ask the model.
+    Works for both the big schema pass and sectional passes.
+    """
+    # 1) Build large, diverse context
+    ctx, srcs = _gather_understanding_context(up_store, prompt, base_k=max(8, top_k // 2))
 
-def rag_answer_uploaded(up_store: Any, oai, cfg, question: str, top_k: int = 6) -> Tuple[str, List[str]]:
-    if up_store is None:
-        return ("Uploaded store is not ready. Please upload and vectorize documents.", [])
-    # NEW: derive a compact retrieval query from the big prompt
-    retr_q = _derive_retrieval_query(question) or question
+    # 2) If still nothing, token-fallback: query individual tokens to fish some text
+    if not ctx.strip():
+        q = prompt[:200]
+        toks = [t for t in re.sub(r"[/\-]", " ", q.lower()).split() if len(t) >= 4][:10]
+        seen = set(); parts = []; srcs = []
+        for t in toks:
+            try:
+                docs = up_store.similarity_search(t, k=4) or []
+            except Exception:
+                docs = []
+            for d in docs:
+                txt = getattr(d, "page_content", "") or getattr(d, "content", "") or ""
+                meta = getattr(d, "metadata", {}) or {}
+                src = meta.get("source", "") or ""
+                sig = (src + "|" + txt[:200]).lower()
+                if not txt.strip() or sig in seen:
+                    continue
+                seen.add(sig)
+                parts.append(txt[:1800])
+                if src and src not in srcs:
+                    srcs.append(src)
+                if len(parts) >= 24:
+                    break
+            if len(parts) >= 24:
+                break
+        ctx = "\n\n---\n\n".join(parts)
 
-    docs = _similarity_search(up_store, retr_q, k=top_k)
-    if not docs and retr_q != question:
-        # tiny fallback: try the original prompt once as well
-        docs = _similarity_search(up_store, question, k=top_k)
+    if not ctx.strip():
+        return "", []
 
-    if not docs:
-        prompt = f"No context returned from retrieval. Still attempt a general answer:\n\nQUESTION:\n{question}"
-        try:
-            res = oai.chat.completions.create(
-                model=cfg.ANALYSIS_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.4,
-            )
-            return (res.choices[0].message.content.strip(), [])
-        except Exception as ex:
-            return (f"LLM error: {ex}", [])
-
-    context = "\n\n".join(getattr(d, "page_content", getattr(d, "content", "")) or "" for d in docs)
-    prompt = f"""Answer the user's question using ONLY the context below. If the answer is not present, say you couldn't find it.
-
-CONTEXT:
-{context}
-
-QUESTION:
-{question}
-"""
+    # 3) Ask the model tightly
+    sys = (
+        "You are a precise assistant. Answer ONLY using the provided context. "
+        "If something is missing, say 'Not found in provided context'."
+    )
+    user = f"CONTEXT:\n{ctx}\n\nQUESTION:\n{prompt}\n\nAnswer succinctly. Return JSON exactly when requested."
     try:
         res = oai.chat.completions.create(
-            model=cfg.ANALYSIS_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+            model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o"),
+            messages=[{"role": "system", "content": sys}, {"role": "user", "content": user}],
+            temperature=0.0,
+            max_tokens= min(2200, getattr(cfg, "MAX_TOKENS", 2200)),
         )
-        ans = res.choices[0].message.content.strip()
-    except Exception as ex:
-        ans = f"LLM error: {ex}"
-
-    sources: List[str] = []
-    for d in docs:
-        meta = getattr(d, "metadata", {}) or {}
-        src = meta.get("source") or meta.get("file") or ""
-        if src and src not in sources:
-            sources.append(src)
-
-    return (ans, sources)
+        out = (res.choices[0].message.content or "").strip()
+        return out, srcs
+    except Exception:
+        return "", []
 
 # ---------------------------------------------------------------------
 # DOCX helpers: insert Table of Contents at top (used by proposal_builder)
