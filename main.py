@@ -38,7 +38,7 @@ from modules.proposal_builder import BuildOptions, build_proposal
 from modules.sp_retrieval import get_sp_evidence_for_question, get_store_evidence
 
 # ---------------- basic page config / styles ----------------
-st.set_page_config(page_title="📄 Proposal Studio", layout="wide", page_icon="📄")
+st.set_page_config(page_title="BCT Proposal Studio", layout="wide", page_icon="📄")
 st.markdown("""
 <style>
 .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
@@ -49,7 +49,7 @@ section[data-testid="stChatMessage"] { margin-bottom: .35rem; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📄 Proposal Studio")
+st.title("BCT Proposal Studio")
 cfg = load_config()
 oai = OpenAI(api_key=cfg.OPENAI_API_KEY)
 
