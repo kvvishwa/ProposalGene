@@ -16,6 +16,9 @@ from typing import List, Dict, Any, Tuple, Optional
 import streamlit as st
 from openai import OpenAI
 
+
+
+import textwrap
 from config import load_config, Config
 from modules.ui_helpers import (
     inject_sticky_chat_css, copy_to_clipboard_button, copy_sources_button,
@@ -36,6 +39,8 @@ from modules.llm_processing import generate_intelligence_questions, generate_str
 from modules.understanding_extractor import extract_rfp_facts, extract_rfp_facts_from_raw_text, facts_to_context, plan_dynamic_sections, plan_to_blueprint
 from modules.proposal_builder import BuildOptions, build_proposal
 from modules.sp_retrieval import get_sp_evidence_for_question, get_store_evidence
+from modules.understanding_docx import build_understanding_docx
+
 
 # ---------------- basic page config / styles ----------------
 st.set_page_config(page_title="BCT Proposal Studio", layout="wide", page_icon="📄")
@@ -83,6 +88,7 @@ try:
 except Exception as _e:
     print("SQLite backport not applied:", _e)
 
+
 # ----------------- session state -----------------
 ss = st.session_state
 ss.setdefault("uploaded_paths", []); ss.setdefault("up_store", None); ss.setdefault("vectorized", False); ss.setdefault("temp_files", [])
@@ -120,6 +126,148 @@ def _fmt_src(ev) -> str:
 
 def _fmt_text(ev) -> str:
     return _get(ev, "text", "") or ""
+#-------------------------For Understanding Doc-------------------
+
+# --- VALUE PROP synthesis (uses SOW + SharePoint + LLM) ---
+
+
+def _make_bct_value_props(
+    cfg, oai, facts: dict, k: int = 25, *, lenient: bool = True, temperature: float = 0.25
+) -> tuple[str, list[str], str]:
+    """Return (bct_vp_text, bct_vp_sources_labels, generic_vp_text)."""
+
+    # ---- 0) Inputs & clamps
+    k = max(8, min(50, int(k or 25)))  # keep evidence pack in a sane range
+
+    # ---- 1) Get SOW (fallback to facts summary)
+    sow = ((facts or {}).get("contract_and_compliance") or {}).get("sow_summary", "").strip()
+    if not sow:
+        try:
+            from modules.understanding_extractor import facts_to_context
+            sow = (facts_to_context(facts).summary or "").strip()
+        except Exception:
+            sow = ""
+    sow_snip = sow[:1500]  # keep prompt lean
+
+    # ---- 2) Add light cues from facts to steer retrieval
+    sol = (facts or {}).get("solicitation", {}) or {}
+    org = (facts or {}).get("proposal_organization", {}) or {}
+    evalc = (facts or {}).get("evaluation_and_selection", {}) or {}
+    cues = []
+    if sol.get("issuing_entity_name"): cues.append(sol["issuing_entity_name"])
+    if sol.get("solicitation_title"):  cues.append(sol["solicitation_title"])
+    if org.get("required_sections"):   cues += org["required_sections"][:5]
+    if evalc.get("criteria"):
+        cues += [c.get("name","") for c in evalc["criteria"] if c.get("name")]
+    cues = [c for c in cues if c]
+    cue_line = ("Keywords: " + ", ".join(sorted(set(cues))[:10])) if cues else ""
+
+    # ---- 3) Build query for SP-grounded evidence
+    query = textwrap.dedent(f"""\
+        From BCT's perspective, what compelling value proposition aligns with this SOW?
+        Focus on differentiators, past performance, accelerators/solutions, certifications,
+        delivery approach, governance/SLAs, security/compliance, and measurable outcomes.
+
+        {cue_line}
+
+        SOW SUMMARY:
+        {sow_snip}
+    """).strip()
+
+    # ---- 4) Retrieve evidence (lenient if supported)
+    try:
+        evs = get_sp_evidence_for_question(query, facts, cfg, k=k, lenient=lenient) or []
+    except TypeError:
+        evs = get_sp_evidence_for_question(query, facts, cfg, k=k) or []
+
+    # ---- 5) Build numbered evidence block (stable index by (src,page))
+    def _format_sources(evs):
+        seen = set(); out = []
+        for e in evs:
+            src = getattr(e, "source", None) or (e.get("source") if isinstance(e, dict) else None)
+            pg  = getattr(e, "page_hint", None) or (e.get("page_hint") if isinstance(e, dict) else None)
+            if not src: 
+                continue
+            label = f"{Path(src).name}{f' · p.{pg}' if pg else ''}"
+            key = f"{src}|{pg or ''}"
+            if key not in seen:
+                seen.add(key)
+                out.append(label)
+        return out
+
+    def _build_context_block(evs, max_chunks=24):
+        numbered, src_map, idx_ctr = [], {}, 1
+        for e in evs:
+            src = getattr(e, "source", None) or (e.get("source") if isinstance(e, dict) else None)
+            pg  = getattr(e, "page_hint", None) or (e.get("page_hint") if isinstance(e, dict) else None)
+            txt = getattr(e, "text", None) or (e.get("text") if isinstance(e, dict) else "")
+            key = f"{src}|{pg or ''}"
+            if key not in src_map:
+                src_map[key] = idx_ctr; idx_ctr += 1
+            if len(numbered) < max_chunks and txt:
+                numbered.append(f"[{src_map[key]}] {txt}")
+        return "\n\n".join(numbered)
+
+    context_block = _build_context_block(evs)
+
+    # ---- 6) Compose BCT VP (grounded if evidence, fallback to non-cited if none)
+    if context_block:
+        sys = (
+            "You are a proposal strategist. Using only the provided evidence, craft a concise value proposition for BCT "
+            "aligned to the SOW. Use markdown; prefer 2 short paragraphs (or 5–8 bullets). Append [n] footnotes where "
+            "claims come from evidence [n]. If evidence is thin, say so briefly."
+        )
+        user = f"EVIDENCE (numbered):\n{context_block}\n\nTASK: Write the BCT value proposition."
+        temp = temperature
+    else:
+        # No evidence—write a short evergreen VP tailored to the SOW (no citations)
+        sys = (
+            "You are a proposal strategist. Draft a short, evergreen BCT value proposition tailored to the SOW. "
+            "Use plain markdown paragraphs. Do not invent client names or cite sources."
+        )
+        user = f"SOW SUMMARY:\n{sow_snip}\n\nTASK: Write the BCT value proposition (no citations)."
+        temp = max(0.3, temperature)
+
+    try:
+        r = oai.chat.completions.create(
+            model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o-mini"),
+            messages=[{"role":"system","content":sys},{"role":"user","content":user}],
+            temperature=temp,
+        )
+        bct_vp_text = (r.choices[0].message.content or "").strip()
+    except Exception as ex:
+        bct_vp_text = f"*LLM error composing BCT value proposition: {ex}*"
+
+    bct_vp_sources = _format_sources(evs)
+
+    # ---- 7) Generic value prop (no citations)
+    facts_slim = facts.get("solicitation", {}) if isinstance(facts, dict) else {}
+    issuer = (facts_slim or {}).get("issuing_entity_name", "")
+    title  = (facts_slim or {}).get("solicitation_title", "") or (facts_slim or {}).get("solicitation_id", "")
+    hint_lines = []
+    if title:  hint_lines.append(f"RFP Title: {title}")
+    if issuer: hint_lines.append(f"Issuer: {issuer}")
+    if sow:    hint_lines.append(f"SOW Summary: {sow_snip}")
+    hint = "\n".join(hint_lines)
+
+    sys2 = (
+        "You are a proposal writer. Draft a reusable, generic value proposition (no citations), tailored to the hint. "
+        "Use 1–2 plain markdown paragraphs (120–180 words). Avoid naming specific past clients; keep it evergreen."
+    )
+    user2 = f"HINT:\n{hint or '(no hint)'}\n\nTASK: Write a generic value proposition suitable for an RFP response."
+
+    try:
+        r2 = oai.chat.completions.create(
+            model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o-mini"),
+            messages=[{"role":"system","content":sys2},{"role":"user","content":user2}],
+            temperature=0.4,
+        )
+        generic_vp_text = (r2.choices[0].message.content or "").strip()
+    except Exception as ex:
+        generic_vp_text = f"*LLM error composing generic value proposition: {ex}*"
+
+    return bct_vp_text, bct_vp_sources, generic_vp_text
+
 
 # ---------------- shared chat helpers (both SP & RFP) ----------------
 def _rewrite_query_with_history(oai: OpenAI, cfg, history: List[Dict[str, str]], user_q: str) -> str:
@@ -292,21 +440,35 @@ def render_sharepoint_chat(cfg, oai):
 
 # ---------------- RFP Chat (ChatGPT-like) ----------------
 def render_rfp_chat(cfg, oai):
+    """Chat with the uploaded RFP. Supports:
+       - Grounded (retrieval + citations)
+       - Open LLM (no retrieval, no citations)
+    """
     st.markdown("### Ask Anything (Chat with your RFP)")
     inject_sticky_chat_css()
+
     # Controls
     c1, c2, c3, c4 = st.columns([1,1,1,1])
     with c1:
-        top_k = st.slider("Top-K (RFP)", 4, 24, 12, 1, key="rfp_top_k")
+        mode = st.radio(
+            "Mode",
+            options=["Grounded (with citations)", "Open LLM (no citations)"],
+            index=0,
+            horizontal=False,
+            key="rfp_mode",
+            help="Grounded uses retrieved evidence with [n] footnotes; Open LLM is a free-form assistant."
+        )
     with c2:
-        temperature = st.slider("Creativity (RFP)", 0.0, 1.0, 0.2, 0.1, key="rfp_temp")
+        top_k = st.slider("Top-K (RFP)", 4, 24, 12, 1, key="rfp_top_k", help="Used only in Grounded mode")
     with c3:
-        lenient = st.toggle("Lenient retrieval (RFP)", value=True, key="rfp_lenient")
+        temperature = st.slider("Creativity", 0.0, 1.0, 0.2, 0.1, key="rfp_temp")
     with c4:
-        if st.button("Reset RFP chat", use_container_width=True):
-            ss.rfp_chat_messages = []
-            ss.rfp_chat_last_evidence = []
-            st.rerun()
+        lenient = st.toggle("Lenient retrieval", value=True, key="rfp_lenient")
+
+    if st.button("Reset RFP chat", use_container_width=True):
+        ss.rfp_chat_messages = []
+        ss.rfp_chat_last_evidence = []
+        st.rerun()
 
     # History
     for m in ss.rfp_chat_messages:
@@ -316,66 +478,111 @@ def render_rfp_chat(cfg, oai):
     # Input
     user_q = st.chat_input("Ask about the uploaded documents…")
     if not user_q:
-        st.caption("Try: “what is the submission due date?”, “POC details”, “evaluation criteria & weights”.")
+        if mode.startswith("Grounded"):
+            st.caption("Try: “what’s the submission due date?”, “POC details”, “evaluation criteria & weights”.")
+        else:
+            st.caption("Open mode: ask planning, drafting, or brainstorming questions (no citations).")
         return
 
+    # Log user turn
     ss.rfp_chat_messages.append({"role": "user", "content": user_q})
     with st.chat_message("user"):
         st.markdown(user_q)
 
+    # Make follow-ups standalone
     standalone_q = _rewrite_query_with_history(oai, cfg, ss.rfp_chat_messages, user_q)
 
-    # Retrieve evidence from the uploaded RFP store
-    k = top_k if lenient else max(6, top_k // 2)
-    evs = get_store_evidence(ss.up_store, standalone_q, ss.rfp_facts, k=k) if ss.up_store else []
-    ss.rfp_chat_last_evidence = evs
-    context_block = _build_context_block(evs)
+    if mode.startswith("Grounded"):
+        # ------------------ GROUNDED PATH: retrieve evidence + cite ------------------
+        k = top_k if lenient else max(6, top_k // 2)
+        evs = get_store_evidence(ss.up_store, standalone_q, ss.rfp_facts, k=k) if ss.up_store else []
+        ss.rfp_chat_last_evidence = evs
+        context_block = _build_context_block(evs)
 
-    sys = (
-        "You are a precise assistant for the user's uploaded RFP documents. "
-        "Answer ONLY using the provided context. Cite sources with [1], [2]."
-    )
-    user = (
-        f"CONTEXT (numbered excerpts):\n{context_block or '[no evidence retrieved]'}\n\n"
-        f"QUESTION:\n{standalone_q}\n\n"
-        "Answer clearly in markdown and footnote claims with [n] that match the Sources list."
-    )
+        sys = (
+            "You are a precise assistant for the user's uploaded RFP documents. "
+            "Answer ONLY using the provided context. Cite sources with [1], [2]. "
+            "If not found in context, say you don't know."
+        )
+        user = (
+            f"CONTEXT (numbered excerpts):\n{context_block or '[no evidence retrieved]'}\n\n"
+            f"QUESTION:\n{standalone_q}\n\n"
+            "Answer clearly in markdown and footnote claims with [n] that match the Sources list."
+        )
 
-    with st.chat_message("assistant"):
-        placeholder = st.empty()
-        full = ""
-        try:
-            stream = oai.chat.completions.create(
-                model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o"),
-                messages=[{"role":"system","content":sys},{"role":"user","content":user}],
-                temperature=temperature,
-                stream=True,
-            )
-            for chunk in stream:
-                token = ""
-                try:
-                    token = chunk.choices[0].delta.content or ""
-                except Exception:
-                    pass
-                if token:
-                    full += token
-                    placeholder.markdown(full)
-        except Exception as ex:
-            full = f"*LLM error: {ex}*"
-            placeholder.markdown(full)
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            full = ""
+            try:
+                stream = oai.chat.completions.create(
+                    model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o"),
+                    messages=[{"role":"system","content":sys},{"role":"user","content":user}],
+                    temperature=temperature,
+                    stream=True,
+                )
+                for chunk in stream:
+                    token = ""
+                    try:
+                        token = chunk.choices[0].delta.content or ""
+                    except Exception:
+                        pass
+                    if token:
+                        full += token
+                        placeholder.markdown(full)
+            except Exception as ex:
+                full = f"*LLM error: {ex}*"
+                placeholder.markdown(full)
 
-        ss.rfp_chat_messages.append({"role": "assistant", "content": full})
-        _render_sources_ui(evs)
+            ss.rfp_chat_messages.append({"role": "assistant", "content": full})
+            _render_sources_ui(evs)
 
-        # Quick follow-ups
-        if full and len(full) > 40:
-            cols = st.columns(3)
-            suggs = ["List all deadlines", "Primary & alternate POCs", "Page limits and forms"]
-            for i, s in enumerate(suggs):
-                with cols[i]:
-                    if st.button(s, use_container_width=True, key=f"rfp_sugg_{i}"):
-                        ss.rfp_chat_messages.append({"role":"user","content":s})
-                        st.rerun()
+    else:
+        # ------------------ OPEN LLM PATH: no retrieval, no citations ------------------
+        # Optional tiny hint from extracted facts (keeps answers on-topic without forcing citations)
+        facts = ss.get("rfp_facts") or {}
+        issuer = (facts.get("solicitation") or {}).get("issuing_entity_name") or ""
+        title  = (facts.get("solicitation") or {}).get("solicitation_title") or (facts.get("solicitation") or {}).get("solicitation_id") or ""
+        due    = ((facts.get("schedule") or {}).get("submission_due") or {}).get("date") or ""
+        hint_lines = []
+        if title:  hint_lines.append(f"RFP Title: {title}")
+        if issuer: hint_lines.append(f"Issuer: {issuer}")
+        if due:    hint_lines.append(f"Due: {due}")
+        hint = "\n".join(hint_lines)
+
+        sys = (
+            "You are a helpful proposal assistant. Answer clearly in markdown. "
+            "You are not required to cite sources. If the user asks for citations, say this is open mode."
+        )
+        user = (
+            (f"RFP FACT HINTS (optional):\n{hint}\n\n" if hint else "") +
+            f"USER QUESTION:\n{standalone_q}"
+        )
+
+        with st.chat_message("assistant"):
+            placeholder = st.empty()
+            full = ""
+            try:
+                stream = oai.chat.completions.create(
+                    model=getattr(cfg, "ANALYSIS_MODEL", "gpt-4o"),
+                    messages=[{"role":"system","content":sys},{"role":"user","content":user}],
+                    temperature=temperature,
+                    stream=True,
+                )
+                for chunk in stream:
+                    token = ""
+                    try:
+                        token = chunk.choices[0].delta.content or ""
+                    except Exception:
+                        pass
+                    if token:
+                        full += token
+                        placeholder.markdown(full)
+            except Exception as ex:
+                full = f"*LLM error: {ex}*"
+                placeholder.markdown(full)
+
+            ss.rfp_chat_messages.append({"role": "assistant", "content": full})
+            # no Sources panel in open mode
 
 # ================= ensure folders exist =================
 ensure_dirs(BASE_DIR); RFP_FACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -490,6 +697,68 @@ with tab_understanding:
                 ss.rfp_facts = facts; ss.rfp_raw = raw; ss.ocr_used_last = bool(ocr_used); ss.raw_chars_last = int(chars)
 
         render_rfp_facts(ss.rfp_facts or {}, show_provenance=True)
+
+        # ---- Value Proposition (Preview) — shown on page BEFORE the export button ----
+        st.markdown("### Value Proposition (Preview)")
+
+        vp_cols = st.columns([2, 1, 1])
+        with vp_cols[0]:
+            st.caption("We’ll synthesize two versions: a SharePoint-grounded BCT value proposition with [n] footnotes, and a generic version without citations.")
+        with vp_cols[1]:
+            vp_k = st.slider("Evidence depth (Top-K from SharePoint)", min_value=8, max_value=40, value=int(ss.get("vp_k", 25)), step=1, key="vp_k")
+        with vp_cols[2]:
+            if st.button("Generate / Refresh Value Props", key="btn_vp"):
+                with st.spinner("Synthesizing value propositions…"):
+                    bct_vp_text, bct_vp_sources, generic_vp_text = _make_bct_value_props(cfg, oai, ss.get("rfp_facts") or {}, k=int(st.session_state["vp_k"]))
+                ss.vp_bct_text = bct_vp_text
+                ss.vp_bct_sources = bct_vp_sources
+                ss.vp_generic_text = generic_vp_text
+
+        # Show previews if available
+        if ss.get("vp_bct_text") or ss.get("vp_generic_text"):
+            st.markdown("#### BCT Value Proposition (SharePoint-grounded)")
+            st.markdown(ss.get("vp_bct_text") or "_Not available_")
+            if ss.get("vp_bct_sources"):
+                st.caption("Sources: " + ", ".join(ss.get("vp_bct_sources", [])))
+
+            st.markdown("#### Generic Value Proposition")
+            st.markdown(ss.get("vp_generic_text") or "_Not available_")
+        else:
+            st.info("Click **Generate / Refresh Value Props** to preview the value propositions based on your SOW and SharePoint corpus.")
+
+        # Export to Understanding DOCX
+        c_dl1, c_dl2 = st.columns([1,1])
+        with c_dl1:
+            if st.button("Build Understanding DOCX (with Value Props)"):
+                if not ss.get("rfp_facts"):
+                    st.warning("No RFP facts available yet.")
+                else:
+                    with st.spinner("Synthesizing value propositions and compiling document…"):
+                        bct_vp_text, bct_vp_sources, generic_vp_text = _make_bct_value_props(cfg, oai, ss.get("rfp_facts") or {}, k=25)
+                        ud_bytes = build_understanding_docx(
+                            facts=ss.get("rfp_facts") or {},
+                            rfp_chat_messages=ss.get("rfp_chat_messages") or [],
+                            sp_chat_messages=ss.get("sp_chat_messages") or [],
+                            title="RFP Understanding Report",
+                            add_toc=True,
+                            # NEW: include the on-page previews
+                            bct_vp_text=ss.get("vp_bct_text"),
+                            bct_vp_sources=ss.get("vp_bct_sources"),
+                            generic_vp_text=ss.get("vp_generic_text"),
+                        )
+                    st.session_state["understanding_docx_bytes"] = ud_bytes
+                    st.success("Understanding document ready below.")
+
+        with c_dl2:
+            if st.session_state.get("understanding_docx_bytes"):
+                st.download_button(
+                    "⬇ Download Understanding DOCX",
+                    data=st.session_state["understanding_docx_bytes"],
+                    file_name="RFP_Understanding.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+
 
         # ---- Chat with your RFP (streaming, citations) ----
         st.divider()
