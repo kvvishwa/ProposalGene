@@ -21,8 +21,51 @@ from docx.text.paragraph import Paragraph
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT, WD_BREAK
 from docx.oxml.shared import OxmlElement, qn
 
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 # ----------------------------- insertion primitives -----------------------------
+
+# --- add near the top ---
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+
+import re
+_XML_ILLEGAL = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F]')
+def sanitize_for_xml(text: str) -> str:
+    return _XML_ILLEGAL.sub('', text or '')
+
+def _local(tag):
+    return tag.split('}', 1)[1] if '}' in tag else tag
+
+def _strip_numPr_in_paragraph(p_elm):
+    """Remove numbering from a paragraph to avoid missing num/abstractNum definitions."""
+    if _local(p_elm.tag) != "p":
+        return
+    pPr = None
+    for ch in p_elm:
+        if _local(ch.tag) == "pPr":
+            pPr = ch
+            break
+    if pPr is None:
+        return
+    to_remove = []
+    for ch in pPr:
+        if _local(ch.tag) == "numPr":
+            to_remove.append(ch)
+    for n in to_remove:
+        pPr.remove(n)
+
+def _strip_nested_numPr(elm):
+    """Walk element and remove numPr in any descendant paragraphs (incl. tables)."""
+    if _local(elm.tag) == "p":
+        _strip_numPr_in_paragraph(elm)
+    for ch in list(elm):
+        _strip_nested_numPr(ch)
+
+def _is_sectPr(elm):
+    return _local(elm.tag) == "sectPr"
+
 
 def insert_paragraph_after(paragraph: Paragraph, text: str = "", style_name: Optional[str] = None) -> Paragraph:
     """
@@ -141,31 +184,42 @@ def add_sources_line(doc: _Doc, sources: List[str], after_paragraph: Optional[Pa
 
 def append_docx(base_doc: _Doc, add_doc: _Doc, after_index: Optional[int]) -> None:
     """
-    Append the contents of add_doc into base_doc.
-    If after_index is provided, insert immediately after that paragraph index
-    (order-preserving). Works for paragraphs and tables.
+    Append contents of add_doc into base_doc.
+    - Strips numbering (w:numPr) from inserted paragraphs.
+    - Skips section properties (w:sectPr) blocks.
+    - Works when after_index is provided (insert immediately after that paragraph).
     """
     body = base_doc.element.body
+    add_body_elems = [el for el in add_doc.element.body if not _is_sectPr(el)]
+
+    # sanitize numbering to avoid unreadable content
+    safe_elems = []
+    for el in add_body_elems:
+        el2 = deepcopy(el)
+        _strip_nested_numPr(el2)
+        safe_elems.append(el2)
+
     if after_index is None:
-        for el in add_doc.element.body:
-            body.append(deepcopy(el))
+        for el in safe_elems:
+            body.append(el)
         return
 
-    # Find insertion position in body relative to the paragraph index
+    # Find insertion position by paragraph index
     try:
         anchor_p = base_doc.paragraphs[after_index]
         body_elems = list(body)
         pos = body_elems.index(anchor_p._p)
     except Exception:
-        # Fall back to append at end if anything goes wrong
-        for el in add_doc.element.body:
-            body.append(deepcopy(el))
+        # Fallback to append at end
+        for el in safe_elems:
+            body.append(el)
         return
 
     insert_pos = pos + 1
-    for el in add_doc.element.body:
-        body.insert(insert_pos, deepcopy(el))
+    for el in safe_elems:
+        body.insert(insert_pos, el)
         insert_pos += 1
+
 
 
 # ----------------------------- anchors & normalization -----------------------------

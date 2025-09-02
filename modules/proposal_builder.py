@@ -18,6 +18,31 @@ from docx import Document
 from docx.document import Document as _Doc
 from docx.text.paragraph import Paragraph
 
+
+import re
+from docx.oxml.ns import qn
+
+def _ends_with_page_break(doc) -> bool:
+    try:
+        p = doc.paragraphs[-1]
+        for r in p.runs:
+            for child in r._r:
+                if child.tag.endswith('}br') and child.get(qn('w:type')) == 'page':
+                    return True
+    except Exception:
+        pass
+    return False
+
+_XML_ILLEGAL = re.compile(r'[\x00-\x08\x0B\x0C\x0E-\x1F]')
+def sanitize_for_xml(text: str) -> str:
+    """Strip control chars that make Word flag 'unreadable content'."""
+    return _XML_ILLEGAL.sub('', text or '')
+
+def _safe_get_source(e) -> str | None:
+    if isinstance(e, dict):
+        return e.get("source")
+    return getattr(e, "source", None)
+
 # ---- Rich DOCX helpers (preserve formatting) --------------------------------
 # insert_section: anchor-aware, XML-level merge
 try:
@@ -199,26 +224,52 @@ def _insert_static_section_preserve(base_doc: _Doc, label: str, path: str, opts:
 # =============================================================================
 # Dynamic insertion (always with heading)
 # =============================================================================
-def _insert_dynamic_section(base_doc: _Doc, label: str, md: str, evidence: List[dict], opts: BuildOptions) -> None:
+def _insert_dynamic_section(base_doc: _Doc, label: str, md: str, evidence: list, opts: BuildOptions) -> None:
     """
     Append a dynamic section:
-      - Optional page break
+      - Optional page break (avoids back-to-back breaks)
       - Styled heading (level/style from opts)
-      - Markdown-ish body
-      - Optional 'Sources:' line
+      - Markdown body (sanitized)
+      - Optional 'Sources:' line (deduped, sanitized)
     """
+    # 1) Page break (optional, avoid double breaks)
     if opts.page_breaks:
-        _add_page_break(base_doc)
-    _add_heading_paragraph(
-        base_doc,
-        label,
-        style_name=(opts.dynamic_heading_style_name or f"Heading {max(1, min(9, opts.dynamic_heading_level))}"),
-    )
-    last = _insert_markdown_block(base_doc, md)
+        try:
+            if not _ends_with_page_break(base_doc):
+                _add_page_break(base_doc)
+        except Exception:
+            _add_page_break(base_doc)
+
+    # 2) Heading
+    style_name = opts.dynamic_heading_style_name or f"Heading {max(1, min(9, opts.dynamic_heading_level))}"
+    heading_text = sanitize_for_xml(label)
+    heading_p = _add_heading_paragraph(base_doc, heading_text, style_name=style_name)
+
+    # 3) Body (sanitized) — insert *after* heading if supported
+    safe_md = sanitize_for_xml(md or "")
+    try:
+        # prefer anchored insert if your helper supports it
+        last_para = _insert_markdown_block(base_doc, safe_md, after_paragraph=heading_p)  # type: ignore[arg-type]
+    except TypeError:
+        # legacy helper without 'after_paragraph' param: just append
+        last_para = _insert_markdown_block(base_doc, safe_md)
+
+    if last_para is None:
+        try:
+            last_para = base_doc.paragraphs[-1]
+        except Exception:
+            last_para = None
+
+    # 4) Sources line (dedupe + sanitize)
     if opts.include_sources and evidence:
-        srcs = list({e.get("source") for e in evidence if e.get("source")})
+        srcs = []
+        for e in evidence:
+            s = _safe_get_source(e)
+            if s:
+                srcs.append(s)
+        srcs = sorted({sanitize_for_xml(s) for s in srcs if s})
         if srcs:
-            _add_sources_line(base_doc, srcs, after_paragraph=last)
+            _add_sources_line(base_doc, srcs, after_paragraph=last_para)
 
 
 # =============================================================================
