@@ -65,6 +65,24 @@ SUPPORTED_UPLOAD_TYPES = ["pdf", "docx", "pptx"]
 
 STATIC_SECTIONS = ["Profile of the Firm","Cover Letter","Executive Summary","Experience","Offerings","References","Team & Credentials","Case Studies","Confidentiality"]
 
+try:
+    import sqlite3 as _stdlib_sqlite
+    def _vtuple(v: str):
+        try:
+            return tuple(int(x) for x in v.split(".")[:3])
+        except Exception:
+            return (0, 0, 0)
+    if _vtuple(getattr(_stdlib_sqlite, "sqlite_version", "0.0.0")) < (3, 35, 0):
+        import sys
+        import pysqlite3 as _pysqlite3  # requires pysqlite3-binary on Linux
+        sys.modules["sqlite3"] = _pysqlite3
+        import sqlite3
+        print("SQLite patched via pysqlite3:", sqlite3.sqlite_version)
+    else:
+        print("System SQLite OK:", _stdlib_sqlite.sqlite_version)
+except Exception as _e:
+    print("SQLite backport not applied:", _e)
+
 # ----------------- session state -----------------
 ss = st.session_state
 ss.setdefault("uploaded_paths", []); ss.setdefault("up_store", None); ss.setdefault("vectorized", False); ss.setdefault("temp_files", [])
