@@ -7,20 +7,24 @@ gradio==4.41.0
 streamlit==1.36.0
 requests==2.32.3
 
-# --- Microsoft auth / SharePoint ---
+# --- Microsoft / SharePoint ---
 msal==1.28.0
 Office365-REST-Python-Client==2.5.12
 
 # --- OpenAI SDK ---
 openai==1.40.0
 
-# --- Retrieval stack (pinned to avoid chroma.config issue) ---
-# Retrieval stack — compatible pins
+# --- Retrieval stack (aligned on 0.2 line) ---
 chromadb==0.5.3
 langchain==0.2.10
 langchain-community==0.2.10
-langchain-openai==0.3.32   # (or ==0.2.14 if you prefer staying on the 0.2 line)
-# intentionally NO explicit langchain-core pin
+langchain-openai==0.2.14     # << key: matches the 0.2 core line
+# intentionally DO NOT pin langchain-core
+
+# --- Embeddings / NLP ---
+sentence-transformers==2.6.1  # pulls a compatible torch on Py 3.11
+# (If you're on Python 3.13, consider removing sentence-transformers to avoid torch wheels.)
+
 
 
 # --- Embeddings / Transformers (CPU) ---
