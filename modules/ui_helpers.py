@@ -69,6 +69,40 @@ def _prov_expander(label: str, prov_list: list):
                     st.code(str(p)[:1000], language="text")
 
 
+def _render_bullets(label: str, items: list | None):
+    """Small helper to render a labeled bullet list or a dash if empty."""
+    items = items or []
+    if items:
+        st.write(f"**{label}:**")
+        for x in items:
+            st.markdown(f"- {x}")
+    else:
+        st.write(f"**{label}:** —")
+
+
+def _render_scope_section(facts: dict, show_provenance: bool = False):
+    """
+    Renders a dedicated 'Scope' section.
+    Supports:
+      - facts['scope']['in_scope'] / ['out_of_scope']
+      - or facts['scope']['scope_raw'] (fallback)
+    """
+    scope = (facts or {}).get("scope") or {}
+    if not scope:
+        return  # nothing to show
+
+    st.markdown("#### Scope")
+    if "in_scope" in scope or "out_of_scope" in scope:
+        _render_bullets("In Scope", scope.get("in_scope"))
+        _render_bullets("Out of Scope", scope.get("out_of_scope"))
+    elif "scope_raw" in scope:
+        _render_bullets("Scope (Detected)", scope.get("scope_raw"))
+
+    # If in future you attach provenance for scope, render like this:
+    # if show_provenance:
+    #     _prov_expander("Scope", scope.get("provenance") or [])
+
+
 def render_rfp_facts(facts: dict, show_provenance: bool = False):
     """
     Pretty renders the structured facts into cards/tables.
@@ -185,6 +219,9 @@ def render_rfp_facts(facts: dict, show_provenance: bool = False):
     st.write("**Exceptions Policy:**", org.get("exceptions_policy") or "—")
     if show_provenance:
         _prov_expander("Proposal Organization", org.get("provenance") or [])
+
+    # >>> NEW: Dedicated Scope section (appears before Contract & Compliance)
+    _render_scope_section(facts, show_provenance=show_provenance)
 
     st.markdown("#### Evaluation & Selection")
     crit = evalc.get("criteria") or []

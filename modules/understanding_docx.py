@@ -74,6 +74,27 @@ def _format_date(d: Any) -> str:
         return " ".join(x for x in [date, time, tz] if x)
     return _san(str(d or ""))
 
+def _render_scope(doc: Document, facts: Dict[str, Any]):
+    """
+    Add a dedicated 'Scope' section. Supports:
+      - facts['scope']['in_scope'] and/or ['out_of_scope']
+      - facts['scope']['scope_raw'] as fallback
+    """
+    scope = (facts or {}).get("scope") or {}
+    if not scope:
+        return
+    doc.add_heading("7. Scope", level=1)
+    if scope.get("in_scope") or scope.get("out_of_scope"):
+        if scope.get("in_scope"):
+            doc.add_paragraph("In Scope", style=None)
+            _add_list(doc, scope.get("in_scope") or [])
+        if scope.get("out_of_scope"):
+            doc.add_paragraph("Out of Scope", style=None)
+            _add_list(doc, scope.get("out_of_scope") or [])
+    elif scope.get("scope_raw"):
+        doc.add_paragraph("Scope (Detected)", style=None)
+        _add_list(doc, scope.get("scope_raw") or [])
+
 def _render_facts(doc: Document, facts: Dict[str, Any]):
     if not isinstance(facts, dict):
         facts = {}
@@ -151,8 +172,11 @@ def _render_facts(doc: Document, facts: Dict[str, Any]):
     _add_kv(doc, "Pricing Format", org.get("pricing_format", ""))
     _add_kv(doc, "Exceptions Policy", org.get("exceptions_policy", ""))
 
-    # 7) Evaluation & Selection
-    doc.add_heading("7. Evaluation & Selection", level=1)
+    # 7) Scope (NEW)
+    _render_scope(doc, facts)
+
+    # 8) Evaluation & Selection (shifted down by one)
+    doc.add_heading("8. Evaluation & Selection", level=1)
     ev = facts.get("evaluation_and_selection", {}) or {}
     for c in ev.get("criteria") or []:
         nm = c.get("name",""); wt = c.get("weight",""); desc = c.get("description","")
@@ -167,31 +191,31 @@ def _render_facts(doc: Document, facts: Dict[str, Any]):
     _add_kv(doc, "Selection Summary", ev.get("selection_process_summary",""))
     _add_kv(doc, "Protest Procedure", ev.get("protest_procedure",""))
 
-    # 8) Contract & Compliance
-    doc.add_heading("8. Contract & Compliance", level=1)
+    # 9) Contract & Compliance (shifted down)
+    doc.add_heading("9. Contract & Compliance", level=1)
     cc = facts.get("contract_and_compliance", {}) or {}
     _add_list(doc, cc.get("key_terms") or [])
     _add_list(doc, cc.get("security_privacy") or [])
     if cc.get("sow_summary"):
         doc.add_paragraph(_san(cc.get("sow_summary")))
 
-    # 9) Missing / Notes
+    # 10) Missing / Notes (shifted down)
     miss = facts.get("missing_notes") or []
     if miss:
-        doc.add_heading("9. Missing / Notes", level=1)
+        doc.add_heading("10. Missing / Notes", level=1)
         _add_list(doc, miss)
 
 def _render_value_prop(doc: Document, bct_vp_text: Optional[str], bct_vp_sources: Optional[List[str]], generic_vp_text: Optional[str]):
-    # 10) BCT Value Proposition (SP-grounded)
+    # 11) BCT Value Proposition (SP-grounded) (shifted down)
     if bct_vp_text:
-        doc.add_heading("10. Value Proposition — BCT (SharePoint-grounded)", level=1)
+        doc.add_heading("11. Value Proposition — BCT (SharePoint-grounded)", level=1)
         _add_mdish_block(doc, bct_vp_text)
         if bct_vp_sources:
             doc.add_paragraph("Sources: " + ", ".join(_san(s) for s in bct_vp_sources))
 
-    # 11) Generic Value Proposition
+    # 12) Generic Value Proposition (shifted down)
     if generic_vp_text:
-        doc.add_heading("11. Value Proposition — Generic", level=1)
+        doc.add_heading("12. Value Proposition — Generic", level=1)
         _add_mdish_block(doc, generic_vp_text)
 
 def _render_chat(doc: Document, title: str, messages: List[Dict[str, Any]]):
@@ -225,7 +249,7 @@ def build_understanding_docx(
     Returns a DOCX as bytes containing:
       - Title page
       - (optional) Table of Contents
-      - RFP Facts Summary
+      - RFP Facts Summary (with Scope)
       - Value Proposition (BCT grounded + generic)
       - RFP Chat transcript
       - SharePoint Chat transcript
@@ -245,10 +269,10 @@ def build_understanding_docx(
     if add_toc:
         _add_toc(doc)
 
-    # Facts
+    # Facts (includes Scope)
     _render_facts(doc, facts or {})
 
-    # Value prop sections (NEW, immediately after facts)
+    # Value prop sections (after facts)
     _render_value_prop(doc, bct_vp_text, bct_vp_sources, generic_vp_text)
 
     # Chats

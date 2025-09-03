@@ -5,16 +5,175 @@
 #  - facts_to_context:  convert rich facts → lean ProposalContext
 #  - infer_section_preferences / plan_dynamic_sections / plan_to_blueprint
 #  - Robust JSON parsing and missing-data handling
+#  - NEW: Scope mining from uploaded files + heuristic parsing
 # -----------------------------------------------------------------------------
 
 from __future__ import annotations
 
 import json as pyjson
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Iterable, Optional
 
 from modules.type import ProposalContext, SectionPlan, GenerationKnobs, DYNAMIC_SECTION_CATALOG
 from modules.app_helpers import rag_answer_uploaded
+
+# ------------------------- SCOPE (heuristics) --------------------------------
+SCOPE_HEADINGS = [
+    r"scope of work",
+    r"statement of work",
+    r"project scope",
+    r"scope",
+    r"services? to be provided",
+    r"in[-\s]?scope",
+    r"out[-\s]?of[-\s]?scope",
+    r"deliverables?",
+]
+
+_HEADING_RE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*)?\s*(?:{})\s*$".format("|".join(SCOPE_HEADINGS)),
+    re.IGNORECASE | re.MULTILINE,
+)
+
+_NEXT_HEADING_RE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*)?\s*[A-Z][A-Za-z0-9\s\-_/()]{3,}\s*$",
+    re.MULTILINE,
+)
+
+_BULLET_RE = re.compile(r"^\s*([\-–•\*\u2022]|\d+[\.)])\s+")
+_EMPTY_LINE_RE = re.compile(r"\n{3,}")
+
+
+def _normalize(text: str) -> str:
+    if not text:
+        return ""
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = _EMPTY_LINE_RE.sub("\n\n", text)
+    # de-hyphenate common OCR breaks
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    return text
+
+
+def _extract_section(text: str, start_idx: int) -> str:
+    """Grab text from a heading at start_idx to the next heading (or EOF)."""
+    tail = text[start_idx:]
+    nxt = _NEXT_HEADING_RE.search(tail, 1)  # skip first line (the current heading)
+    if nxt:
+        return tail[:nxt.start()].strip()
+    return tail.strip()
+
+
+def _split_bullets(block: str) -> List[str]:
+    """Split a block into bullet lines if present; else return paragraph(s)."""
+    if not block:
+        return []
+    lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
+    bullet_items: List[str] = []
+    current: List[str] = []
+    for ln in lines:
+        if _BULLET_RE.match(ln):
+            if current:
+                bullet_items.append(" ".join(current).strip())
+                current = []
+            bullet_items.append(_BULLET_RE.sub("", ln).strip())
+        else:
+            current.append(ln)
+    if current:
+        bullet_items.append(" ".join(current).strip())
+    # If no bullets detected, return paragraphs as items (split on blank lines handled above)
+    return [it for it in bullet_items if it]
+
+
+def extract_scope_blocks(full_text: str) -> Dict[str, List[str]]:
+    """
+    Returns dict with possible keys: 'in_scope', 'out_of_scope', 'scope_raw'
+    - Attempts to separate In-Scope vs Out-of-Scope if both appear.
+    - Falls back to 'scope_raw' (a list of bullet/paragraph items).
+    """
+    text = _normalize(full_text or "")
+    if not text:
+        return {}
+
+    scopes: List[Tuple[str, str]] = []
+    for m in _HEADING_RE.finditer(text):
+        sect = _extract_section(text, m.start())
+        heading = m.group(0).strip().lower()
+        scopes.append((heading, sect))
+
+    if not scopes:
+        return {}
+
+    in_scope_items: List[str] = []
+    out_scope_items: List[str] = []
+    mixed_items: List[str] = []
+
+    for heading, block in scopes:
+        items = _split_bullets(block)
+        if "out" in heading and "scope" in heading:
+            out_scope_items.extend(items)
+        elif ("in" in heading and "scope" in heading) or ("services to be provided" in heading):
+            in_scope_items.extend(items)
+        else:
+            mixed_items.extend(items)
+
+    # Deduplicate while preserving order, with reasonable caps
+    def _dedupe(seq: Iterable[str], cap: int) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for s in seq:
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+            if len(out) >= cap:
+                break
+        return out
+
+    result: Dict[str, List[str]] = {}
+    if in_scope_items:
+        result["in_scope"] = _dedupe(in_scope_items, 120)
+    if out_scope_items:
+        result["out_of_scope"] = _dedupe(out_scope_items, 120)
+    if not result and mixed_items:
+        result["scope_raw"] = _dedupe(mixed_items, 150)
+    return result
+
+
+def _mine_scope_from_store(up_store, k: int = 12, max_chars: int = 100_000) -> Dict[str, List[str]]:
+    """
+    Retrieve likely scope chunks from uploaded store, concatenate, then parse.
+    This does not depend on the LLM response and works even if the schema pass is sparse.
+    """
+    if up_store is None:
+        return {}
+    seeds = [
+        "scope of work", "statement of work", "project scope", "scope",
+        "in scope", "out of scope", "deliverables", "services to be provided"
+    ]
+    texts: List[str] = []
+    seen_snips: set[str] = set()
+    for s in seeds:
+        try:
+            docs = up_store.similarity_search(s, k=k) or []
+        except Exception:
+            docs = []
+        for d in docs:
+            txt = (getattr(d, "page_content", "") or getattr(d, "content", "") or "")
+            if not txt:
+                continue
+            snip = re.sub(r"\s+", " ", txt[:180]).lower()
+            if snip in seen_snips:
+                continue
+            seen_snips.add(snip)
+            texts.append(txt)
+            # stop if we already have plenty of text
+            if sum(len(t) for t in texts) > max_chars:
+                break
+        if sum(len(t) for t in texts) > max_chars:
+            break
+
+    if not texts:
+        return {}
+    blob = "\n\n".join(texts)
+    return extract_scope_blocks(blob)
 
 
 # -----------------------------------------------------------------------------
@@ -32,6 +191,7 @@ _RFP_TYPE_CANON = {
     "Research & Innovation": ["research", "pilot", "innovation", "prototype"],
 }
 
+
 def _canonicalize_rfp_type(text: str) -> str:
     s = (text or "").lower()
     for canon, cues in _RFP_TYPE_CANON.items():
@@ -39,11 +199,13 @@ def _canonicalize_rfp_type(text: str) -> str:
             return canon
     return "Technical Solution"
 
+
 def _strip_code_fences(s: str) -> str:
     if not s:
         return s
     # remove ```json ... ``` or ``` ... ```
     return re.sub(r"```(?:json)?\s*([\s\S]*?)\s*```", r"\1", s, flags=re.IGNORECASE)
+
 
 def _normalize_shell(data: Dict) -> Dict:
     """Ensure top-level keys exist so UI doesn't KeyError."""
@@ -57,11 +219,14 @@ def _normalize_shell(data: Dict) -> Dict:
     data.setdefault("proposal_organization", {})
     data.setdefault("evaluation_and_selection", {})
     data.setdefault("contract_and_compliance", {})
+    # NEW: add scope shell so downstream UI can safely render a section
+    data.setdefault("scope", {})
     data.setdefault("missing_notes", [])
     return data
 
+
 def _is_effectively_empty(data: Dict) -> bool:
-    """Check if all top-level sections are empty."""
+    """Check if all top-level sections are empty (excluding missing_notes and scope)."""
     if not isinstance(data, dict) or not data:
         return True
     keys = [
@@ -76,6 +241,7 @@ def _is_effectively_empty(data: Dict) -> bool:
         if isinstance(v, list) and len(v) > 0:
             return False
     return True
+
 
 def _merge_dict_deep(base: Dict, add: Dict) -> Dict:
     """Shallow/deep merge: dicts merged, lists concatenated, scalars replaced if add has value."""
@@ -100,6 +266,7 @@ def _merge_dict_deep(base: Dict, add: Dict) -> Dict:
             if v not in (None, "", [], {}):
                 base[k] = v
     return base
+
 
 def _add_missing_notes(data: Dict) -> None:
     notes = data.get("missing_notes") or []
@@ -379,12 +546,14 @@ RETRIEVAL_CUES: Dict[str, str] = {
 def _ask(up_store, oai, cfg, prompt: str, top_k: int = 12) -> Tuple[str, List[str]]:
     return rag_answer_uploaded(up_store, oai, cfg, prompt, top_k=top_k)
 
+
 def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
     """
     First pass: big schema. If effectively empty, run sectional passes with cues.
     Merge all results; append missing_notes for any still-empty sections.
+    Also: independently mine SCOPE from the store and attach as a top-level section.
     """
-    raw_all = []
+    raw_all: List[str] = []
 
     # 1) Big schema pass
     raw1, _src1 = _ask(up_store, oai, cfg, _RFP_FACTS_PROMPT, top_k=12)
@@ -402,7 +571,20 @@ def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
             if piece.get(key):
                 data = _merge_dict_deep(data, piece)
 
-    # 3) Add missing notes if still blanky
+    # 3) Attach SCOPE mined directly from uploaded store
+    try:
+        scope = _mine_scope_from_store(up_store, k=12)
+    except Exception:
+        scope = {}
+    if scope:
+        # Add as its own top-level section so UI can render "Scope"
+        data["scope"] = scope
+        # Optional: if there's no sow_summary, create a short one from in_scope
+        if (not (data.get("contract_and_compliance") or {}).get("sow_summary")) and scope.get("in_scope"):
+            sample = "; ".join(scope["in_scope"][:5])
+            data.setdefault("contract_and_compliance", {}).setdefault("sow_summary", sample[:800])
+
+    # 4) Add missing notes if still blanky
     _add_missing_notes(data)
 
     raw_combined = "\n\n---\n\n".join([r for r in raw_all if r])
@@ -453,7 +635,7 @@ def facts_to_context(facts: dict) -> ProposalContext:
 
 
 # -----------------------------------------------------------------------------
-# Preference inference, planning, blueprint (unchanged)
+# Preference inference, planning, blueprint
 # -----------------------------------------------------------------------------
 def infer_section_preferences(ctx: ProposalContext) -> Dict[str, float]:
     text = f"{ctx.summary} {' '.join(ctx.constraints)} {' '.join(ctx.mandatory_sections)}".lower()
@@ -547,11 +729,11 @@ def plan_to_blueprint(plans: List[SectionPlan], current_template_name: str | Non
         "template_has_headings": True,
     }
 
-# --- add this helper (no extra imports needed) ---
+
+# --- JSON helpers (robust) ----------------------------------------------------
 def _largest_brace_json(s: str) -> str | None:
     """
     Return the largest balanced {...} substring found by scanning with a stack.
-    This avoids PCRE recursion (?R) and works with Python's 're' limitations.
     """
     if not s:
         return None
@@ -567,7 +749,6 @@ def _largest_brace_json(s: str) -> str | None:
             if depth > 0:
                 depth -= 1
                 if depth == 0 and start != -1:
-                    # candidate complete object
                     if (best_start == -1) or ((i - start) > (best_end - best_start)):
                         best_start, best_end = start, i
                     start = -1
@@ -575,27 +756,25 @@ def _largest_brace_json(s: str) -> str | None:
         return s[best_start:best_end+1]
     return None
 
+
 def _safe_json_loads(s: str) -> Dict:
     """
     Try direct JSON load after stripping code fences. If that fails,
-    extract the largest balanced {...} block with a stack scanner and load that.
+    extract the largest balanced {...} block and load that.
     """
     if not s:
         return {}
     s2 = _strip_code_fences(s).strip()
-    # 1) direct attempt
     try:
         return pyjson.loads(s2)
     except Exception:
         pass
-    # 2) try the largest balanced {...} region
     cand = _largest_brace_json(s2)
     if cand:
         try:
             return pyjson.loads(cand)
         except Exception:
             pass
-    # 3) give up
     return {}
 
 
@@ -635,7 +814,7 @@ def extract_rfp_facts_from_raw_text(raw_text: str, oai, cfg, return_raw: bool = 
     return (data, out) if return_raw else data
 
 
-
+# --- Deterministic miners -----------------------------------------------------
 def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
     """
     Deterministic POC miner: pull likely contact snippets and extract emails/phones.
@@ -646,10 +825,10 @@ def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
         "questions concerning", "rfp contact", "issuing office contact"
     ]
     seen_sig = set()
-    found = []
-    email_rx = _re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", _re.I)
-    phone_rx = _re.compile(r"(?:\+?\d[\d\-\s().]{7,}\d)")
-    name_rx  = _re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b")  # crude
+    found: List[dict] = []
+    email_rx = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
+    phone_rx = re.compile(r"(?:\+?\d[\d\-\s().]{7,}\d)")
+    name_rx  = re.compile(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})\b")  # crude
 
     for s in seeds:
         try:
@@ -660,7 +839,7 @@ def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
             txt = (getattr(d, "page_content", "") or getattr(d, "content", "") or "")[:1200]
             if not txt or not txt.strip():
                 continue
-            sig = _re.sub(r"\s+", " ", txt[:200]).lower()
+            sig = re.sub(r"\s+", " ", txt[:200]).lower()
             if sig in seen_sig:
                 continue
             seen_sig.add(sig)
@@ -669,7 +848,7 @@ def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
             phones = phone_rx.findall(txt)
             # Guess a name near 'contact' or before an email occurrence
             name = ""
-            m = _re.search(r"(?:contact|communications|to:)\s*[:\-]?\s*(.+)$", txt, _re.I | _re.M)
+            m = re.search(r"(?:contact|communications|to:)\s*[:\-]?\s*(.+)$", txt, re.I | re.M)
             if m:
                 line = m.group(1)[:120]
                 nm = name_rx.search(line)
@@ -696,7 +875,7 @@ def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
                 found.append(entry)
 
     # de-dupe by (email, phone)
-    uniq = []
+    uniq: List[dict] = []
     seen = set()
     for e in found:
         key = (e["email"], e["phone"])
