@@ -15,11 +15,13 @@ Office365-REST-Python-Client==2.5.12
 openai==1.40.0
 
 # --- Retrieval stack (pinned to avoid chroma.config issue) ---
+# Retrieval stack — compatible pins
 chromadb==0.5.3
 langchain==0.2.10
-langchain-core==0.2.35
 langchain-community==0.2.10
-langchain-openai==0.1.6
+langchain-openai==0.3.32   # (or ==0.2.14 if you prefer staying on the 0.2 line)
+# intentionally NO explicit langchain-core pin
+
 
 # --- Embeddings / Transformers (CPU) ---
 sentence-transformers==2.6.1
