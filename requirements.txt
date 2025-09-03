@@ -31,9 +31,10 @@ docx2txt==0.8
 PyMuPDF==1.24.2
 
 # --- Data / utils ---
-numpy==1.26.4
-tiktoken==0.7.0
-lxml==4.9.4
+pandas>=2.2.2
+numpy>=1.26.4
+tiktoken>=0.7.0
+lxml>=4.9.3
 
 # --- SQLite shim (only if your App Service sqlite < 3.35; otherwise omit) ---
 # pysqlite3-binary==0.5.2.post3 ; platform_system == "Linux"
