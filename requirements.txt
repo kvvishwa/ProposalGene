@@ -28,5 +28,5 @@ pypdf==4.2.0
 pdfminer.six==20231228
 
 # Misc
-tiktoken==0.7.0
+tiktoken
 # don't pin lxml; python-docx will pull a compatible version
