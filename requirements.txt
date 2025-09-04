@@ -16,7 +16,7 @@ langchain-core==0.3.68
 langchain-community==0.3.26
 langchain-openai>=0.1.6
 sentence-transformers
-faiss-cpu==1.7.4
+faiss-cpu>=1.7.4
 
 pysqlite3-binary>=0.5.2 ; platform_system == "Linux"
       # keep if you still want to run the old app locally
