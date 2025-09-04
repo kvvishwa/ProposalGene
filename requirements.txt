@@ -2,7 +2,7 @@ fastapi==0.116.1
 uvicorn[standard]>=0.30.0
 gradio>=4.41.0
 
-streamlit==1.32.2  
+streamlit==1.46.2  
 requests>=2.32.0
 
 msal>=1.28.0
@@ -27,7 +27,7 @@ pdfminer.six>=20231228
 python-pptx>=0.6.23
 
 pandas>=2.2.2
-numpy>=1.26.4
+numpy>=2.2.3
 tiktoken>=0.7.0
 lxml>=4.9.3
 
