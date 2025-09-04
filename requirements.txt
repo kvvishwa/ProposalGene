@@ -10,7 +10,7 @@ Office365-REST-Python-Client>=2.5.12
 
 
 openai>=1.30.0
-chromadb==1.0.13
+chromadb==0.4.24
 langchain==0.3.26
 langchain-core==0.3.68
 langchain-community==0.3.26
