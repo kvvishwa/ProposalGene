@@ -18,8 +18,8 @@ langchain==0.1.20
 langchain-community==0.0.36
 sentence-transformers==2.2.2
 
-# SQLite shim for Chroma on Azure/Linux
-pysqlite3-binary==0.5.2.post3 ; platform_system == "Linux"
+# SQLite shim for Chroma on Azure/Linux (use this version)
+pysqlite3-binary==0.5.4 ; platform_system == "Linux"
 
 # Docs / PDF (no PPTX)
 python-docx==1.1.2
@@ -29,4 +29,3 @@ pdfminer.six==20231228
 
 # Misc
 tiktoken==0.7.0
-# (no 'sqlite3 >= 3.35.0' here — that line is invalid and should be removed)
