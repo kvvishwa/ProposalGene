@@ -13,13 +13,13 @@ openai==1.40.0
 
 # Retrieval (legacy, Pydantic v1 era)
 chromadb==0.4.24
-pydantic==1.10.13
-langchain==0.1.20
-langchain-community==0.0.36
+pydantic
+langchain
+langchain-community
 # (no langchain-openai needed; your code calls openai SDK directly)
 
 # Embeddings (only if Python 3.11; remove on 3.13 to avoid torch wheels)
-sentence-transformers==2.2.2
+sentence-transformers
 
 # Docs / PDF (you said no PPTX)
 python-docx==1.1.2
