@@ -15,10 +15,10 @@ openai==1.40.0
 chromadb==0.4.24
 pydantic==1.10.13
 langchain==0.1.20
-langchain-community==0.0.36
+langchain-community==0.0.41   # ← bump from 0.0.36 to >=0.0.38
 sentence-transformers==2.2.2
 
-# SQLite shim for Chroma on Azure/Linux (use this version)
+# SQLite shim for Chroma on Azure/Linux
 pysqlite3-binary==0.5.4 ; platform_system == "Linux"
 
 # Docs / PDF (no PPTX)
