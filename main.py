@@ -56,7 +56,20 @@ section[data-testid="stChatMessage"] { margin-bottom: .35rem; }
 
 st.title("BCT Proposal Studio")
 cfg = load_config()
-oai = OpenAI(api_key=cfg.OPENAI_API_KEY)
+
+#---------------------------------------
+import httpx
+
+# proxies can be a string like "http://user:pass@host:port"
+# or a dict: {"http": "...", "https": "..."}
+PROXIES = getattr(cfg, "HTTP_PROXY", None) or getattr(cfg, "PROXIES", None)
+
+http_client = httpx.Client(
+    proxies=PROXIES,            # string or dict
+    timeout=30.0,               # optional
+)
+
+oai = OpenAI(api_key=cfg.OPENAI_API_KEY, http_client=http_client)
 
 # ----------------- constants/paths -----------------
 BASE_DIR = Path(getattr(cfg, "BASE_DIR", "."))
