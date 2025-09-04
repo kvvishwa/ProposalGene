@@ -8,28 +8,25 @@ requests==2.32.3
 msal==1.28.0
 Office365-REST-Python-Client==2.5.12
 
-# OpenAI SDK (used directly in your code)
-openai>=1.40.0
-
+# OpenAI SDK
+openai==1.40.0
 
 # Retrieval (legacy, Pydantic v1 era)
 chromadb==0.4.24
-pydantic
-langchain
-langchain-community
-# (no langchain-openai needed; your code calls openai SDK directly)
+pydantic==1.10.13
+langchain==0.1.20
+langchain-community==0.0.36
+sentence-transformers==2.2.2
 
-# Embeddings (only if Python 3.11; remove on 3.13 to avoid torch wheels)
-sentence-transformers
+# SQLite shim for Chroma on Azure/Linux
+pysqlite3-binary==0.5.2.post3 ; platform_system == "Linux"
 
-
-sqlite3 >= 3.35.0
-# Docs / PDF (you said no PPTX)
+# Docs / PDF (no PPTX)
 python-docx==1.1.2
 docx2txt==0.8
 pypdf==4.2.0
 pdfminer.six==20231228
 
 # Misc
-tiktoken
-# don't pin lxml; python-docx will pull a compatible version
+tiktoken==0.7.0
+# (no 'sqlite3 >= 3.35.0' here — that line is invalid and should be removed)
