@@ -15,7 +15,8 @@ langchain-core==0.3.68
 langchain-community==0.3.26
 langchain-openai>=0.1.6
 sentence-transformers
-faiss-cpu==1.7.4
+faiss-cpu==1.11.0.post1
+
 
 pysqlite3-binary>=0.5.2 ; platform_system == "Linux"
 
