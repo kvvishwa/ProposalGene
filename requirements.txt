@@ -9,11 +9,11 @@ msal>=1.28.0
 Office365-REST-Python-Client>=2.5.12
 
 
+langchain==0.1.20
+langchain-community==0.0.39
+chromadb==0.4.24
+
 openai>=1.30.0
-chromadb>=0.4.24
-langchain>=0.2.3
-langchain-core>=0.2.0
-langchain-community>=0.2.0
 langchain-openai>=0.1.6
 sentence-transformers
 faiss-cpu>=1.7.4
