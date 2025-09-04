@@ -1,13 +1,12 @@
 fastapi==0.116.1
 uvicorn[standard]>=0.30.0
-gradio>=4.41.0
+gradio==4.41.0
 
-streamlit==1.46.0  
+streamlit==1.46.0
 requests>=2.32.0
 
 msal>=1.28.0
 Office365-REST-Python-Client>=2.5.12
-
 
 openai>=1.30.0
 chromadb==0.4.24
@@ -16,18 +15,21 @@ langchain-core==0.3.68
 langchain-community==0.3.26
 langchain-openai>=0.1.6
 sentence-transformers
-faiss-cpu>=1.7.4
+faiss-cpu==1.7.4
 
 pysqlite3-binary>=0.5.2 ; platform_system == "Linux"
-      # keep if you still want to run the old app locally
+
 python-docx>=1.1.0
 docx2txt
 pypdf>=4.2.0
 pdfminer.six>=20231228
 python-pptx>=0.6.23
 
-pandas>=2.2.2
+# Core data stack (locked for compatibility)
 numpy==1.26.4
-tiktoken>=0.7.0
+pandas==2.2.2
+typing-extensions>=4.7
+pydantic>=2.6,<3
+tiktoken==0.7.0
 lxml>=4.9.3
-
+packaging>=23.2
