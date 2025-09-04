@@ -1,34 +1,32 @@
-fastapi>=0.99.1
-uvicorn[standard]>=0.30.0
-gradio>=4.41.0
+# Servers / UI
+fastapi==0.99.1                # FastAPI pre-v2 Pydantic
+uvicorn[standard]==0.30.1
+streamlit==1.36.0
+requests==2.32.3
+gradio==4.41.0
 
-streamlit==1.32.2  
-requests>=2.32.0
+# Microsoft / SharePoint
+msal==1.28.0
+Office365-REST-Python-Client==2.5.12
 
-msal>=1.28.0
-Office365-REST-Python-Client>=2.5.12
+# OpenAI SDK
+openai==1.40.0
 
+# Retrieval stack (legacy)
+chromadb==0.4.24               # 0.4.x requires Pydantic<2 and FastAPI<0.100
+pydantic==1.10.13              # << pin to v1 to satisfy chroma & fastapi 0.99.x
+langchain==0.1.16              # pre-0.2 line (Pydantic v1 era)
+langchain-community==0.0.35    # matching community split for 0.1.x
+langchain-openai==0.0.8        # integration for the 0.1.x line
 
-openai>=1.30.0
-chromadb==0.4.0
+# Embeddings (optional; prefer py3.11 if using ST/torch)
+sentence-transformers==2.2.2   # older ST works fine with 0.1.x; pin lower to avoid surprises
 
-langchain>=0.2.3
-langchain-core>=0.2.0
-langchain-community==0.2.10
-langchain-openai>=0.1.6
-sentence-transformers
-faiss-cpu>=1.7.4
+# Document parsing
+python-docx==1.1.2
+docx2txt==0.8
+# Avoid platform builds on py3.13:
+PyMuPDF==1.24.2 ; python_version < "3.13"
 
-pysqlite3-binary>=0.5.2 ; platform_system == "Linux"
-      # keep if you still want to run the old app locally
-python-docx>=1.1.0
-docx2txt
-pypdf>=4.2.0
-pdfminer.six>=20231228
-python-pptx>=0.6.23
-
-pandas>=2.2.2
-numpy>=1.26.4
-tiktoken>=0.7.0
-lxml>=4.9.3
-
+# Misc
+tiktoken==0.7.0
