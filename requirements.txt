@@ -1,32 +1,32 @@
 # Servers / UI
-fastapi==0.99.1                # FastAPI pre-v2 Pydantic
+fastapi==0.99.1
 uvicorn[standard]==0.30.1
 streamlit==1.36.0
 requests==2.32.3
-gradio==4.41.0
 
 # Microsoft / SharePoint
 msal==1.28.0
 Office365-REST-Python-Client==2.5.12
 
-# OpenAI SDK
+# OpenAI SDK (used directly in your code)
 openai==1.40.0
 
-# Retrieval stack (legacy)
-chromadb==0.4.24               # 0.4.x requires Pydantic<2 and FastAPI<0.100
-pydantic==1.10.13              # << pin to v1 to satisfy chroma & fastapi 0.99.x
-langchain==0.1.16              # pre-0.2 line (Pydantic v1 era)
-langchain-community==0.0.35    # matching community split for 0.1.x
-langchain-openai==0.0.8        # integration for the 0.1.x line
+# Retrieval (legacy, Pydantic v1 era)
+chromadb==0.4.24
+pydantic==1.10.13
+langchain==0.1.20
+langchain-community==0.0.36
+# (no langchain-openai needed; your code calls openai SDK directly)
 
-# Embeddings (optional; prefer py3.11 if using ST/torch)
-sentence-transformers==2.2.2   # older ST works fine with 0.1.x; pin lower to avoid surprises
+# Embeddings (only if Python 3.11; remove on 3.13 to avoid torch wheels)
+sentence-transformers==2.2.2
 
-# Document parsing
+# Docs / PDF (you said no PPTX)
 python-docx==1.1.2
 docx2txt==0.8
-# Avoid platform builds on py3.13:
-PyMuPDF==1.24.2 ; python_version < "3.13"
+pypdf==4.2.0
+pdfminer.six==20231228
 
 # Misc
 tiktoken==0.7.0
+# don't pin lxml; python-docx will pull a compatible version
