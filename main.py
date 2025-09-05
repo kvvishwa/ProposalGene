@@ -70,6 +70,7 @@ SUPPORTED_UPLOAD_TYPES = ["pdf", "docx", "pptx"]
 
 STATIC_SECTIONS = ["Profile of the Firm","Cover Letter","Executive Summary","Experience","Offerings","References","Team & Credentials","Case Studies","Confidentiality"]
 
+
 try:
     import sqlite3 as _stdlib_sqlite
     def _vtuple(v: str):
