@@ -70,6 +70,11 @@ SUPPORTED_UPLOAD_TYPES = ["pdf", "docx", "pptx"]
 
 STATIC_SECTIONS = ["Profile of the Firm","Cover Letter","Executive Summary","Experience","Offerings","References","Team & Credentials","Case Studies","Confidentiality"]
 
+import numpy as _np
+if not hasattr(_np, "float_"): _np.float_ = _np.float64
+if not hasattr(_np, "int_"): _np.int_ = _np.int64
+if not hasattr(_np, "complex_"): _np.complex_ = _np.complex128
+
 
 try:
     import sqlite3 as _stdlib_sqlite

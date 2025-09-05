@@ -12,6 +12,12 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 
 log = logging.getLogger(__name__)
 
+import numpy as _np
+if not hasattr(_np, "float_"): _np.float_ = _np.float64
+if not hasattr(_np, "int_"): _np.int_ = _np.int64
+if not hasattr(_np, "complex_"): _np.complex_ = _np.complex128
+
+
 # --- optional: hardened persistence via chromadb.PersistentClient ---
 try:
     from chromadb import PersistentClient  # Settings import is NOT used (not available in some versions)
