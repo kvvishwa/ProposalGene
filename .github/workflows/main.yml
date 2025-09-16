@@ -11,13 +11,13 @@ permissions:
 
 env:
   # Use GitHub → Settings → Actions → Variables for these (NOT secrets)
-  AZURE_TENANT_ID:       ${{ vars.AZURE_TENANT_ID }}
-  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-  AZURE_CLIENT_ID:       ${{ vars.AZURE_CLIENT_ID }}      # App Registration (federated credentials)
-  RESOURCE_GROUP:        ${{ vars.RESOURCE_GROUP }}
-  WEBAPP_NAME:           ${{ vars.WEBAPP_NAME }}
-  ACR_NAME:              ${{ vars.ACR_NAME }}
-  ACR_LOGIN_SERVER:      ${{ vars.ACR_NAME }}.azurecr.io
+  AZURE_TENANT_ID:       ${{ secrets.AZUREAPPSERVICE_TENANTID_3BF581080D3044DCB212A7CF77CE0E78 }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9FDD1A3FC8884659B7E3A810E1A89853 }}
+  AZURE_CLIENT_ID:       ${{ secrets.AZUREAPPSERVICE_CLIENTID_DDCE72BDCBC1415390927BF90157BF7C }}
+  RESOURCE_GROUP:         bctpropgen
+  WEBAPP_NAME:            bctpropgene
+  ACR_NAME:               bctpropgene
+  ACR_LOGIN_SERVER:      bctpropgene.azurecr.io
   IMAGE_NAME:            propgen                          # repo name inside ACR; change if you prefer
   EXPOSED_PORT:          8501                             # matches your Dockerfile/Streamlit
 
