@@ -16,6 +16,8 @@ Office365-REST-Python-Client==2.6.2
 openai==1.75.0
 # LangChain pre-v2 (uses Pydantic v1)
 langchain==0.3.26
+
+langchain-community==0.3.26
 # Remove these pins (they force Pydantic v2):
 # langchain-core
 # langchain-community
