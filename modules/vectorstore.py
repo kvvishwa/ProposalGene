@@ -6,6 +6,9 @@ import json, hashlib, time
 from pathlib import Path
 from typing import List, Optional, Iterable
 
+# >>> CHANGES: import Settings for LC→Chroma init and allow_reset flags
+from chromadb.config import Settings
+
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -17,10 +20,9 @@ if not hasattr(_np, "float_"): _np.float_ = _np.float64
 if not hasattr(_np, "int_"): _np.int_ = _np.int64
 if not hasattr(_np, "complex_"): _np.complex_ = _np.complex128
 
-
 # --- optional: hardened persistence via chromadb.PersistentClient ---
 try:
-    from chromadb import PersistentClient  # Settings import is NOT used (not available in some versions)
+    from chromadb import PersistentClient
 except Exception:
     PersistentClient = None  # type: ignore
 
@@ -39,9 +41,7 @@ except Exception:
 # Try both layouts: root-level and modules/ package
 _sp_fetch = _sp_ingest_wrap = None
 try:
-    # preferred fetcher
     from sharepoint import fetch_files_from_sharepoint as _sp_fetch
-    # optional wrapper in your sharepoint.py
     from sharepoint import ingest_sharepoint_files as _sp_ingest_wrap
 except ModuleNotFoundError:
     try:
@@ -53,14 +53,30 @@ except ModuleNotFoundError:
     except Exception:
         _sp_ingest_wrap = None
 
-DEF_BASE = Path(".")
-DEF_VEC_DIR = DEF_BASE / "vectorstore"
-EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# >>> CHANGES: Azure-friendly defaults (env first, then /home/site/data/, else ./vectorstore)
+def _default_vec_root() -> Path:
+    # Highest priority: explicit env (lets you set CHROMA_PERSIST_DIR in App Settings)
+    env_dir = os.getenv("CHROMA_PERSIST_DIR") or os.getenv("VECTORSTORE_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser().resolve()
+    # Azure Linux App Service persistent area
+    if Path("/home/site/data").exists():
+        return Path("/home/site/data/vectorstore").resolve()
+    # Local/dev fallback
+    return Path("./vectorstore").resolve()
 
+# old globals (kept for reference; unused directly)
+DEF_BASE = Path(".")
+DEF_VEC_DIR = _default_vec_root()
+EMB_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # ---------------- path helpers ----------------
 def _vec_root(cfg) -> Path:
-    return Path(getattr(cfg, "VECTORSTORE_DIR", DEF_VEC_DIR)).resolve()
+    # >>> CHANGES: cfg override still works; otherwise use robust default above
+    root = getattr(cfg, "VECTORSTORE_DIR", None) or os.getenv("VECTORSTORE_DIR") or os.getenv("CHROMA_PERSIST_DIR")
+    base = Path(root).resolve() if root else DEF_VEC_DIR
+    base.mkdir(parents=True, exist_ok=True)
+    return base
 
 def _vec_dir_for(cfg, kind: str) -> Path:
     base = _vec_root(cfg)
@@ -73,7 +89,6 @@ def _sp_vec_dir(cfg) -> Path:
 
 def _sp_manifest_path(cfg) -> Path:
     return _sp_vec_dir(cfg) / "manifest.json"
-
 
 # ---------------- SP manifest helpers ----------------
 def _manifest_load(cfg) -> dict:
@@ -95,10 +110,8 @@ def _chunk_id(source: str, page: int | None, idx: int) -> str:
     base = f"{source}|p{page if page is not None else '-'}|{idx}"
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
-
 # ---------------- embeddings & splitting ----------------
 def _embeddings():
-    # normalize embeddings for more consistent cosine scoring
     return HuggingFaceEmbeddings(
         model_name=EMB_MODEL,
         model_kwargs={"device": "cpu"},
@@ -108,7 +121,6 @@ def _embeddings():
 def _text_splitter(cfg):
     return RecursiveCharacterTextSplitter(
         chunk_size=getattr(cfg, "CHUNK_SIZE", 1000),
-        # bump overlap for better POC/email recall if desired
         chunk_overlap=getattr(cfg, "CHUNK_OVERLAP", 120),
         separators=["\n\n", "\n", " ", ""],
     )
@@ -119,15 +131,24 @@ def _derive_sp_category(path_like: str) -> str:
         return "Staff Augmentation-IT Professional Services"
     return "Other"
 
-
 # ---------------- hardened Chroma init ----------------
 def _make_persistent_client(path: Path):
-    """Return a PersistentClient if available; else None."""
+    """
+    Return a PersistentClient if available; configure with persistent Settings to
+    ensure Chroma 1.x schema (tenants/databases/collections) is initialized.
+    """
     if PersistentClient is None:
         return None
     try:
         path.mkdir(parents=True, exist_ok=True)
-        client = PersistentClient(path=str(path))  # no Settings dependency
+        # >>> CHANGES: Settings with is_persistent + persist_directory + allow_reset
+        settings = Settings(
+            is_persistent=True,
+            persist_directory=str(path),
+            allow_reset=True,
+            anonymized_telemetry=False,
+        )
+        client = PersistentClient(path=str(path), settings=settings)
         # best-effort heartbeat (not all builds expose it)
         try:
             hb = getattr(client, "heartbeat", None)
@@ -145,20 +166,45 @@ def _init_store(collection_name: str, path: Path) -> Chroma:
     Hardened initializer:
       - Prefer chromadb.PersistentClient (stable schema init).
       - On 'no such table: tenants' / 'database error', wipe the folder and recreate.
-      - Fall back to persist_directory path if PersistentClient unavailable.
+      - Fall back to persist_directory + client_settings when PersistentClient unavailable.
+      - Expose 'index_path' on the returned store for UI diagnostics.
     """
     client = _make_persistent_client(path)
 
-    def _construct(client_or_path):
-        if client_or_path is None:
-            return Chroma(collection_name=collection_name, persist_directory=str(path), embedding_function=_embeddings())
-        return Chroma(client=client_or_path, collection_name=collection_name, embedding_function=_embeddings())
+    # >>> CHANGES: common LC client_settings, used when not supplying a client
+    lc_client_settings = Settings(
+        is_persistent=True,
+        persist_directory=str(path),
+        allow_reset=True,
+        anonymized_telemetry=False,
+    )
+
+    def _construct(client_or_none):
+        if client_or_none is None:
+            store = Chroma(
+                collection_name=collection_name,
+                embedding_function=_embeddings(),
+                persist_directory=str(path),
+                client_settings=lc_client_settings,
+            )
+        else:
+            store = Chroma(
+                client=client_or_none,
+                collection_name=collection_name,
+                embedding_function=_embeddings(),
+            )
+        # >>> CHANGES: make the path visible to app_helpers.sp_index_stats()
+        try:
+            setattr(store, "index_path", str(path))
+            setattr(store, "persist_directory", str(path))
+        except Exception:
+            pass
+        return store
 
     try:
-        store = _construct(client)
-        return store
+        return _construct(client)
     except Exception as e:
-        msg = str(e).lower()
+        msg = (str(e) or "").lower()
         if ("no such table" in msg and "tenants" in msg) or ("database error" in msg):
             log.warning("[VectorStore] schema missing/corrupt at %s; repairing…", path)
             shutil.rmtree(path, ignore_errors=True)
@@ -168,19 +214,15 @@ def _init_store(collection_name: str, path: Path) -> Chroma:
                 # Some client builds expose reset(); ignore if absent
                 if client is not None and hasattr(client, "reset"):
                     try:
-                        client.reset()  # type: ignore
+                        client.reset()  # type: ignore[attr-defined]
                     except Exception:
                         pass
-                store = _construct(client)
-                return store
+                return _construct(client)
             except Exception as e2:
                 # last resort: fall back purely to persist_directory param
                 log.warning("[VectorStore] PersistentClient path failed after repair (%s). Using persist_directory.", e2)
-                store = Chroma(collection_name=collection_name, persist_directory=str(path), embedding_function=_embeddings())
-                return store
-        # unknown error: re-raise
+                return _construct(None)
         raise
-
 
 def init_uploaded_store(cfg) -> Chroma:
     p = _vec_dir_for(cfg, "uploaded")
@@ -194,7 +236,6 @@ def init_sharepoint_store(cfg) -> Chroma:
     log.info("[VectorStore] sharepoint backend = Chroma (persistent) at %s", str(p))
     return store
 
-
 # ---------------- wipes (full recursive) ----------------
 def wipe_up_store(cfg):
     p = _vec_dir_for(cfg, "uploaded")
@@ -206,14 +247,8 @@ def wipe_sp_store(cfg):
     shutil.rmtree(p, ignore_errors=True)
     p.mkdir(parents=True, exist_ok=True)
 
-
 # ---------------- ingestion: uploaded ----------------
 def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) -> List[str]:
-    """
-    Ingest uploaded files into the provided Chroma store.
-    - Page-aware PDF indexing (if pdf_text_with_pages is available)
-    - Warn when no text is extracted (scanned PDFs)
-    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=120,
@@ -242,7 +277,6 @@ def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) ->
                 chunks = splitter.split_text(text)
                 metadatas = [{"source": p} for _ in chunks]
                 store.add_texts(chunks, metadatas=metadatas)
-            # ensure on-disk persistence after each file
             try:
                 store.persist()
             except Exception:
@@ -252,7 +286,6 @@ def ingest_files(paths: Iterable[str], store: Chroma, chunk_size: int = 1000) ->
             log.warning("[Ingest] Skipped %s: %s", p, ex)
             continue
     return added
-
 
 # ---------------- ingestion: sharepoint (append-only, de-dupe) ----------------
 def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str]:
@@ -287,7 +320,6 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
         base = f"{source}|p{page if page is not None else '-'}|{idx}"
         return hashlib.sha1(base.encode("utf-8")).hexdigest()
 
-    # -----------------------------------------------------------
     if include_exts is None:
         include_exts = ["pdf", "docx", "pptx"]
 
@@ -297,11 +329,8 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
             "and exposes fetch_files_from_sharepoint or ingest_sharepoint_files."
         )
 
-    # Pull files (via your existing fetchers)
-    if _sp_fetch is not None:
-        local_files = _sp_fetch(cfg, include_exts=include_exts) or []
-    else:
-        local_files = _sp_ingest_wrap(cfg, include_exts=include_exts) or []
+    local_files = (_sp_fetch(cfg, include_exts=include_exts) if _sp_fetch is not None
+                   else _sp_ingest_wrap(cfg, include_exts=include_exts)) or []
 
     if not local_files:
         return []
@@ -311,20 +340,17 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
     vec_dir = _vec_dir_for_sharepoint()
     vec_dir.mkdir(parents=True, exist_ok=True)
 
-    # manifest remembers which exact file versions we already indexed
     manifest = _manifest_load_local()
     site_url = getattr(cfg, "SP_SITE_URL", None)
 
     for local_path in local_files:
         try:
-            # Build a stable "file version" key (path + mtime + size).
             try:
                 st = os.stat(local_path)
                 file_key = f"{local_path}|{int(st.st_mtime)}|{st.st_size}"
             except Exception:
                 file_key = f"{local_path}"
 
-            # Skip if we've already indexed this exact file version
             if manifest.get(file_key):
                 continue
 
@@ -373,7 +399,6 @@ def ingest_sharepoint(cfg, include_exts: Optional[List[str]] = None) -> List[str
             except Exception:
                 pass
 
-            # Remember that this exact file version is now ingested
             manifest[file_key] = {
                 "path": local_path,
                 "site": site_url,
