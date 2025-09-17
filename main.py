@@ -58,6 +58,29 @@ st.title("BCT Proposal Studio")
 cfg = load_config()
 oai = OpenAI(api_key=cfg.OPENAI_API_KEY)
 
+# ----------------
+
+# --- TEMP DEBUG: reveal Chroma vector-store path & versions ---
+import platform
+st.write(f"PY {platform.python_version()}")
+try:
+    import chromadb, langchain, langchain_community
+    st.write("VERSIONS",
+             getattr(chromadb, "__version__", "?"),
+             getattr(langchain, "__version__", "?"),
+             getattr(langchain_community, "__version__", "?"))
+except Exception as e:
+    st.write("Version check error:", e)
+
+# also print the SharePoint index path your app is actually using
+from modules.app_helpers import sp_index_stats
+try:
+    chunks, vec_path = sp_index_stats(cfg)   # this calls init_sharepoint_store under the hood
+    st.write("SP INDEX PATH:", vec_path, "| Chunks?", chunks)
+except Exception as e:
+    st.write("sp_index_stats error:", e)
+
+
 # ----------------- constants/paths -----------------
 BASE_DIR = Path(getattr(cfg, "BASE_DIR", "."))
 SP_URL_STORE = BASE_DIR / "sp_urls.json"
