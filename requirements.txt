@@ -13,7 +13,7 @@ msal==1.32.3
 Office365-REST-Python-Client==2.6.2
 
 # --- OpenAI & LangChain family (v1 lane) ---
-openai=1.75.0
+openai==1.75.0
 # LangChain pre-v2 (uses Pydantic v1)
 langchain==0.3.26
 # Remove these pins (they force Pydantic v2):
