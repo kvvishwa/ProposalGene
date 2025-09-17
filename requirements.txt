@@ -1,51 +1,48 @@
 # --- web & API (v1-compatible) ---
 # If you don't actually use FastAPI/Gradio, you can remove them entirely.
-fastapi==0.95.2
-uvicorn[standard]==0.23.2
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
 # If you need Gradio in the same env, use a v1-compatible release:
-gradio==3.36.0
+gradio==5.43.1
 
 streamlit==1.46.0
 requests==2.32.3
 
 # --- auth & Microsoft Graph/SharePoint ---
-msal==1.28.0
-Office365-REST-Python-Client==2.5.12
+msal==1.32.3
+Office365-REST-Python-Client==2.6.2
 
 # --- OpenAI & LangChain family (v1 lane) ---
-openai>=1.30.0
+openai=1.75.0
 # LangChain pre-v2 (uses Pydantic v1)
-langchain==0.0.251
+langchain==0.3.26
 # Remove these pins (they force Pydantic v2):
 # langchain-core
 # langchain-community
 # langchain-openai
 
 # --- vector DB / embeddings ---
-chromadb==0.4.0
-faiss-cpu==1.7.4
-sentence-transformers==2.2.2
+chromadb==1.0.13
+faiss-cpu==1.11.0
+sentence-transformers==4.1.0
 torch==2.2.2  # CPU-only is fine on App Service
 
 # --- doc parsing ---
-python-docx==1.1.0
-docx2txt==0.8
-pypdf==4.2.0
-pdfminer.six==20231228
+python-docx==1.1.2
+docx2txt==0.9
+pypdf==5.4.0
+pdfminer.six==20250327
 python-pptx==0.6.23
-lxml==4.9.3
+lxml==5.4.0
 
 # --- data stack (NumPy 1.x to avoid removed aliases) ---
-numpy==1.26.4
-pandas==2.2.2
+numpy==2.2.3
+pandas==2.2.3
 
 # --- utils ---
-tiktoken==0.7.0
+tiktoken==0.9.0
 typing-extensions>=4.7
 packaging>=23.2
 
-# Optional (only if your Linux image needs newer SQLite):
-pysqlite3-binary==0.5.4 ; platform_system == "Linux" and python_version < "3.13"
-
 # Pin Pydantic v1 (required by chromadb==0.4.0)
-pydantic==1.10.20
+pydantic==2.11.7
