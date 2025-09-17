@@ -1,0 +1,80 @@
+name: Build & Deploy (ACR → App Service)
+
+on:
+  push:
+    branches: [ "main" ]   # change if you deploy from another branch
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC to Azure (no long-lived secrets)
+  contents: read
+
+env:
+  # Use GitHub → Settings → Actions → Variables for these (NOT secrets)
+  AZURE_TENANT_ID:       ${{ secrets.AZUREAPPSERVICE_TENANTID_3BF581080D3044DCB212A7CF77CE0E78 }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_9FDD1A3FC8884659B7E3A810E1A89853 }}
+  AZURE_CLIENT_ID:       ${{ secrets.AZUREAPPSERVICE_CLIENTID_DDCE72BDCBC1415390927BF90157BF7C }}
+  RESOURCE_GROUP:         bctpropgen
+  WEBAPP_NAME:            bctpropgene
+  ACR_NAME:               bctpropgene
+  ACR_LOGIN_SERVER:      bctpropgene.azurecr.io
+  IMAGE_NAME:            propgen                          # repo name inside ACR; change if you prefer
+  EXPOSED_PORT:          8501                             # matches your Dockerfile/Streamlit
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ env.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Ensure ACR login
+        run: az acr login --name $ACR_NAME
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=main
+            type=sha
+
+      - name: Build & Push to ACR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Deploy to Azure App Service (pin to commit SHA)
+        run: |
+          IMAGE_SHA=$(echo "${{ steps.meta.outputs.tags }}" | tr ' ' '\n' | grep sha256 | head -n1)
+          if [ -z "$IMAGE_SHA" ]; then
+            IMAGE_SHA="${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:main"
+          fi
+          echo "Deploying image: $IMAGE_SHA"
+
+          # Point the Web App to the new image
+          az webapp config container set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$WEBAPP_NAME" \
+            --docker-custom-image-name "$IMAGE_SHA" \
+            --docker-registry-server-url "https://${{ env.ACR_LOGIN_SERVER }}"
+
+          # Ensure the correct port is set (matches Streamlit/Dockerfile)
+          az webapp config appsettings set \
+            --resource-group "$RESOURCE_GROUP" \
+            --name "$WEBAPP_NAME" \
+            --settings WEBSITES_PORT=${{ env.EXPOSED_PORT }}
+
+          # Bounce the app to pull new image now
+          az webapp restart --resource-group "$RESOURCE_GROUP" --name "$WEBAPP_NAME"
