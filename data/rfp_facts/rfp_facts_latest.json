@@ -1,0 +1,160 @@
+{
+  "solicitation": {
+    "issuing_entity_name": "City of Palo Alto",
+    "issuing_entity_type": "Municipal Government",
+    "department_or_office": "Information Technology",
+    "solicitation_id": "RFP193272",
+    "solicitation_title": "SAP On-Call Professional Services",
+    "communication_policy": "Questions or comments regarding this RFP must be submitted to the Questions & Answers section of this project listing on OpenGov."
+  },
+  "points_of_contact": [
+    {
+      "primary": true,
+      "name": "Alice Harrison",
+      "title": "Contract Administrator",
+      "email": "alice.harrison@cityofpaloalto.org",
+      "phone": "(650) 329-2173",
+      "address": "250 Hamilton Avenue, Palo Alto, CA 94301",
+      "notes": null
+    }
+  ],
+  "schedule": {
+    "release_date": {
+      "date": "January 16, 2025"
+    },
+    "pre_bid_conference": {
+      "datetime": null,
+      "location": null
+    },
+    "site_visit": {
+      "datetime": null,
+      "location": null
+    },
+    "qna_deadline": {
+      "date": "February 4, 2025, 1:00pm"
+    },
+    "addendum_final_date": null,
+    "submission_due": {
+      "date": "February 12, 2025, 3:00pm"
+    },
+    "award_target_date": null,
+    "anticipated_start_date": null,
+    "proposal_validity_days": null,
+    "contract_term": null,
+    "renewal_options": null
+  },
+  "submission_instructions": {
+    "method": "Electronic",
+    "portal_name": "OpenGov",
+    "portal_url": "https://procurement.opengov.com/portal/palo-alto-ca",
+    "email_address": null,
+    "physical_address": null,
+    "copies_required": null,
+    "format_requirements": [
+      "Proposals shall be submitted electronically through the City’s electronic procurement system.",
+      "Proposals shall be in a submitted status no later than 3:00 pm on the due date."
+    ],
+    "labeling_instructions": null,
+    "registration_requirements": null,
+    "late_submissions_policy": "The e-procurement system will not accept any proposals after the specified close time."
+  },
+  "minimum_qualifications": {
+    "licenses_certifications": [
+      "SAP certifications"
+    ],
+    "years_experience": null,
+    "similar_projects": null,
+    "insurance_requirements": [],
+    "bonding": [],
+    "financials": null,
+    "other_mandatory": []
+  },
+  "proposal_organization": {
+    "required_sections": [
+      "Proposal Summary",
+      "Profile on the Proposing Firm(s)",
+      "Qualifications of the Firm(s)"
+    ],
+    "page_limits": [
+      {
+        "section": "Proposal Summary",
+        "limit": 3
+      }
+    ],
+    "mandatory_forms": [
+      "Firm_Experience.pdf",
+      "On-Call_SAP_RFP_COST_PROPOSAL_FORM"
+    ],
+    "pricing_format": "Separate Cost File",
+    "exceptions_policy": null
+  },
+  "scope": {
+    "in_scope": [
+      "ABAP/Fiori development",
+      "financial and material management",
+      "human capital management",
+      "customer relationship management",
+      "SAP Basis administration",
+      "integration with utilities systems",
+      "data analytics through BI/BW tools"
+    ],
+    "out_of_scope": [],
+    "scope_raw": []
+  },
+  "evaluation_and_selection": {
+    "criteria": [
+      {
+        "name": "Quality of the Proposal",
+        "weight": null,
+        "description": "Quality and completeness of proposal"
+      },
+      {
+        "name": "Proposed Solution",
+        "weight": null,
+        "description": "Required"
+      }
+    ],
+    "pass_fail_criteria": [],
+    "oral_presentations": {
+      "required": null,
+      "notes": null
+    },
+    "demonstrations": {
+      "required": null,
+      "notes": null
+    },
+    "best_and_final_offers": {
+      "allowed": null
+    },
+    "negotiations": {
+      "allowed": null
+    },
+    "selection_process_summary": null,
+    "protest_procedure": null
+  },
+  "contract_and_compliance": {
+    "key_terms": [],
+    "security_privacy": [
+      "Comply with the City's Information Privacy Policy",
+      "Conform to ISO 27001/2 – Information Security Management Systems (ISMS) Standards"
+    ],
+    "sow_summary": null
+  },
+  "missing_notes": [
+    "Pre-bid conference details",
+    "Site visit details",
+    "Award target date",
+    "Anticipated start date",
+    "Proposal validity days",
+    "Contract term",
+    "Renewal options",
+    "Specific years of experience required",
+    "Similar projects details",
+    "Insurance requirements",
+    "Bonding requirements",
+    "Financial stability requirements",
+    "Exceptions policy details",
+    "Selection process summary",
+    "Protest procedure"
+  ]
+}
