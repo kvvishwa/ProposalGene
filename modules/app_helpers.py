@@ -259,15 +259,16 @@ def st_rerun_compat() -> None:
 # ---------------------------------------------------------------------
 # Retrieval bridges & simple RAG
 # ---------------------------------------------------------------------
+# modules/app_helpers.py  (patch the _similarity_search function)
+
 def _similarity_search(store: Any, query: str, k: int) -> List[Any]:
     """
     Call the store's similarity search with broad compatibility.
-    Expected to return a list of 'document-like' objects with:
-      - page_content or content (str)
-      - metadata (dict) optionally containing 'source'
     """
     if store is None:
         return []
+
+    # 1) Native similarity_search (vectorstores)
     if hasattr(store, "similarity_search"):
         try:
             return store.similarity_search(query, k=k) or []
@@ -278,17 +279,34 @@ def _similarity_search(store: Any, query: str, k: int) -> List[Any]:
                 return []
         except Exception:
             return []
+
+    # 2) "search" method (some stores expose this)
     if hasattr(store, "search"):
         try:
             return store.search(query, k=k) or []
         except Exception:
             return []
+
+    # 3) LangChain retriever (API changed: .invoke is preferred over .get_relevant_documents)
     if hasattr(store, "as_retriever"):
         try:
             retr = store.as_retriever(search_kwargs={"k": k})
-            return retr.get_relevant_documents(query) or []
+            try:
+                # New LC Core: Runnable-like
+                docs = retr.invoke(query)                  # ✅ preferred
+            except (AttributeError, TypeError):
+                # Old API
+                docs = retr.get_relevant_documents(query)  # ↩️ fallback
+            except Exception:
+                # Some retrievers are callable
+                try:
+                    docs = retr(query)                     # 🧯 last resort
+                except Exception:
+                    docs = []
+            return docs or []
         except Exception:
             return []
+
     return []
 
 def sp_index_stats(cfg) -> Tuple[int, str]:

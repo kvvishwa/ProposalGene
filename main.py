@@ -27,6 +27,24 @@ from modules.app_helpers import st_rerun_compat
 from dotenv import load_dotenv
 load_dotenv()   # <---- add this at the top of main.py, before Config()
 
+import os
+
+import subprocess
+st.write("STREAMLIT_CONFIG_FILE =", os.getenv("STREAMLIT_CONFIG_FILE"))
+st.code(subprocess.check_output(["python","-m","streamlit","config","show"], text=True))
+
+
+# LangChain telemetry / tracing
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")
+os.environ.setdefault("LANGCHAIN_ENDPOINT", "")
+os.environ.setdefault("LANGCHAIN_API_KEY", "")
+
+# LlamaIndex telemetry (var name differs across versions; set both)
+os.environ.setdefault("LLAMA_INDEX_DISABLE_TELEMETRY", "true")
+os.environ.setdefault("LLAMA_INDEX_USE_TELEMETRY", "false")
+
+# Chroma anonymized telemetry
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "false")
 
 @dataclass
 class Config:

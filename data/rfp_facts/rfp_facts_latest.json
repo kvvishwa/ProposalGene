@@ -1,11 +1,11 @@
 {
   "solicitation": {
     "issuing_entity_name": "City of Palo Alto",
-    "issuing_entity_type": "Municipal Government",
+    "issuing_entity_type": "",
     "department_or_office": "Information Technology",
     "solicitation_id": "RFP193272",
     "solicitation_title": "SAP On-Call Professional Services",
-    "communication_policy": "Questions or comments regarding this RFP must be submitted to the Questions & Answers section of this project listing on OpenGov."
+    "communication_policy": "Correspondence shall be communicated through the City's electronic procurement system."
   },
   "points_of_contact": [
     {
@@ -14,147 +14,204 @@
       "title": "Contract Administrator",
       "email": "alice.harrison@cityofpaloalto.org",
       "phone": "(650) 329-2173",
-      "address": "250 Hamilton Avenue, Palo Alto, CA 94301",
-      "notes": null
+      "address": "",
+      "notes": ""
     }
   ],
   "schedule": {
     "release_date": {
-      "date": "January 16, 2025"
+      "date": "",
+      "tz": null,
+      "provenance": []
     },
     "pre_bid_conference": {
-      "datetime": null,
-      "location": null
+      "required": null,
+      "virtual": null,
+      "datetime": {
+        "date": "",
+        "time": "",
+        "tz": null
+      },
+      "location": "",
+      "provenance": []
     },
     "site_visit": {
-      "datetime": null,
-      "location": null
+      "required": null,
+      "datetime": {
+        "date": "",
+        "time": "",
+        "tz": null
+      },
+      "location": "",
+      "provenance": []
     },
     "qna_deadline": {
-      "date": "February 4, 2025, 1:00pm"
+      "date": "",
+      "time": "",
+      "tz": null,
+      "provenance": []
     },
-    "addendum_final_date": null,
+    "addendum_final_date": {
+      "date": "",
+      "provenance": []
+    },
     "submission_due": {
-      "date": "February 12, 2025, 3:00pm"
+      "date": "2025-02-12",
+      "time": "15:00",
+      "tz": null,
+      "delivery_cutoff_policy": "The e-procurement system will not accept any proposals after the specified close time.",
+      "provenance": [
+        "Proposals shall be in a submitted status no later than 3:00 pm on Wednesday, February 12, 2025."
+      ]
     },
-    "award_target_date": null,
-    "anticipated_start_date": null,
-    "proposal_validity_days": null,
-    "contract_term": null,
-    "renewal_options": null
+    "award_target_date": {
+      "date": "",
+      "provenance": []
+    },
+    "anticipated_start_date": {
+      "date": "",
+      "provenance": []
+    },
+    "proposal_validity_days": "",
+    "contract_term": "",
+    "renewal_options": ""
   },
   "submission_instructions": {
-    "method": "Electronic",
+    "method": "electronically",
     "portal_name": "OpenGov",
     "portal_url": "https://procurement.opengov.com/portal/palo-alto-ca",
-    "email_address": null,
-    "physical_address": null,
-    "copies_required": null,
+    "email_address": "",
+    "physical_address": "",
+    "copies_required": "",
     "format_requirements": [
-      "Proposals shall be submitted electronically through the City’s electronic procurement system.",
-      "Proposals shall be in a submitted status no later than 3:00 pm on the due date."
+      ""
     ],
-    "labeling_instructions": null,
-    "registration_requirements": null,
-    "late_submissions_policy": "The e-procurement system will not accept any proposals after the specified close time."
+    "labeling_instructions": "",
+    "registration_requirements": "",
+    "late_submissions_policy": "The e-procurement system will not accept any proposals after the specified close time.",
+    "provenance": [
+      "All proposals shall be submitted electronically through the City's electronic procurement system (OpenGov) at: https://procurement.opengov.com/portal/palo-alto-ca"
+    ]
   },
   "minimum_qualifications": {
     "licenses_certifications": [
       "SAP certifications"
     ],
-    "years_experience": null,
-    "similar_projects": null,
-    "insurance_requirements": [],
-    "bonding": [],
-    "financials": null,
-    "other_mandatory": []
+    "years_experience": "",
+    "similar_projects": "",
+    "insurance_requirements": [
+      ""
+    ],
+    "bonding": [
+      ""
+    ],
+    "financials": "",
+    "other_mandatory": [
+      "deep technical expertise"
+    ],
+    "provenance": [
+      "Vendors are expected to have deep technical expertise, SAP certifications, and the ability to work collaboratively with the City to deliver high-quality, reliable solutions."
+    ]
   },
   "proposal_organization": {
     "required_sections": [
-      "Proposal Summary",
-      "Profile on the Proposing Firm(s)",
-      "Qualifications of the Firm(s)"
+      ""
     ],
     "page_limits": [
       {
         "section": "Proposal Summary",
-        "limit": 3
+        "limit": "3 pages"
       }
     ],
     "mandatory_forms": [
-      "Firm_Experience.pdf",
-      "On-Call_SAP_RFP_COST_PROPOSAL_FORM"
+      "Firm_Experience.pdf"
     ],
-    "pricing_format": "Separate Cost File",
-    "exceptions_policy": null
-  },
-  "scope": {
-    "in_scope": [
-      "ABAP/Fiori development",
-      "financial and material management",
-      "human capital management",
-      "customer relationship management",
-      "SAP Basis administration",
-      "integration with utilities systems",
-      "data analytics through BI/BW tools"
-    ],
-    "out_of_scope": [],
-    "scope_raw": []
+    "pricing_format": "",
+    "exceptions_policy": "",
+    "provenance": [
+      "This Section of the Proposal shall discuss the highlights, key features and distinguishing points of the Proposal. Limit this Section to a total of three (3) pages including the separate sheet."
+    ]
   },
   "evaluation_and_selection": {
     "criteria": [
       {
         "name": "Quality of the Proposal",
-        "weight": null,
-        "description": "Quality and completeness of proposal"
-      },
-      {
-        "name": "Proposed Solution",
-        "weight": null,
-        "description": "Required"
+        "weight": "N/A",
+        "description": "Quality and completeness of proposal",
+        "provenance": [
+          "Quality of the Proposal (Required) Quality and completeness of proposal"
+        ]
       }
     ],
-    "pass_fail_criteria": [],
+    "pass_fail_criteria": [
+      ""
+    ],
     "oral_presentations": {
       "required": null,
-      "notes": null
+      "notes": "",
+      "provenance": []
     },
     "demonstrations": {
       "required": null,
-      "notes": null
+      "notes": "",
+      "provenance": []
     },
     "best_and_final_offers": {
-      "allowed": null
+      "allowed": null,
+      "notes": "",
+      "provenance": []
     },
     "negotiations": {
-      "allowed": null
+      "allowed": null,
+      "notes": "",
+      "provenance": []
     },
-    "selection_process_summary": null,
-    "protest_procedure": null
+    "selection_process_summary": "",
+    "protest_procedure": "",
+    "provenance": []
   },
   "contract_and_compliance": {
-    "key_terms": [],
-    "security_privacy": [
-      "Comply with the City's Information Privacy Policy",
-      "Conform to ISO 27001/2 – Information Security Management Systems (ISMS) Standards"
+    "key_terms": [
+      ""
     ],
-    "sow_summary": null
+    "security_privacy": [
+      ""
+    ],
+    "sow_summary": "",
+    "provenance": []
   },
   "missing_notes": [
-    "Pre-bid conference details",
-    "Site visit details",
-    "Award target date",
-    "Anticipated start date",
-    "Proposal validity days",
-    "Contract term",
-    "Renewal options",
-    "Specific years of experience required",
-    "Similar projects details",
-    "Insurance requirements",
-    "Bonding requirements",
-    "Financial stability requirements",
-    "Exceptions policy details",
-    "Selection process summary",
-    "Protest procedure"
-  ]
+    "Issuing entity type not specified.",
+    "Release date not found.",
+    "Pre-bid conference details not found.",
+    "Site visit details not found.",
+    "Q&A deadline not found.",
+    "Addendum final date not found.",
+    "Award target date not found.",
+    "Anticipated start date not found.",
+    "Proposal validity days not specified.",
+    "Contract term not specified.",
+    "Renewal options not specified.",
+    "Copies required not specified.",
+    "Format requirements not specified.",
+    "Labeling instructions not specified.",
+    "Registration requirements not specified.",
+    "Insurance requirements not specified.",
+    "Bonding requirements not specified.",
+    "Financial requirements not specified.",
+    "Required sections not fully specified.",
+    "Pricing format not specified.",
+    "Exceptions policy not specified.",
+    "Pass/fail criteria not specified.",
+    "Oral presentations not specified.",
+    "Demonstrations not specified.",
+    "Best and final offers not specified.",
+    "Negotiations not specified.",
+    "Selection process summary not specified.",
+    "Protest procedure not specified.",
+    "Key terms not specified.",
+    "Security and privacy terms not specified.",
+    "SOW summary not specified."
+  ],
+  "scope": {}
 }

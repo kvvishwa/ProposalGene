@@ -14,6 +14,13 @@ from modules.app_helpers import (
 from modules.ui_helpers import render_rfp_facts
 from modules.vectorstore import init_uploaded_store
 from modules.understanding_docx import build_understanding_docx
+from modules.understanding_extractor import (
+    extract_rfp_facts,
+    _safe_json_loads,
+    _is_effectively_empty,
+    _normalize_shell,
+    _add_missing_notes,
+)
 
 SCHEMA_HINT = """
 Return strict JSON with keys:
@@ -39,23 +46,11 @@ def _safe_dumps(obj, limit=4000):
 
 # ----------------------------- JSON helpers -----------------------------
 def _coerce_json(text: str):
-    s = (text or "").strip()
-    m = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", s, flags=re.I)
-    if m: s = m.group(1)
-    start = s.find("{")
-    if start != -1:
-        depth = 0; end = None
-        for i, ch in enumerate(s[start:], start):
-            if ch == "{": depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1; break
-        if end: s = s[start:end]
-    obj = json.loads(s)
-    if isinstance(obj, str):
-        try: obj = json.loads(obj)
-        except Exception: pass
+    # Hardened: use extractor’s lenient JSON parser; never throws
+    try:
+        obj = _safe_json_loads(text)
+    except Exception:
+        obj = {}
     return obj
 
 def _ensure_dict(obj):
@@ -166,7 +161,7 @@ def _recommend_dynamic_sections(cfg, oai: OpenAI):
     st.markdown("### 🧩 Recommend Dynamic Sections (with weights)")
     st.caption("Suggests which dynamic sections to include and assigns weights. Click 'Apply' to send to Generation module.")
     if st.button("Recommend Sections"):
-        facts =st.session_state.get("rfp_facts") or {}
+        facts = st.session_state.get("rfp_facts") or {}
         prompt = (
             "Return JSON list under key 'sections' where each item is {section, weight, rationale}. "
             "Weights are integers 1-5 (importance for this RFP). Avoid sections already mapped as static.\n\n"
@@ -190,11 +185,13 @@ def _recommend_dynamic_sections(cfg, oai: OpenAI):
             import pandas as pd
             df = pd.DataFrame(rows)
             st.dataframe(df, use_container_width=True)
+            # persist across reruns so "Apply" has stable data
             st.session_state["dyn_recos_preview"] = rows
+            st.session_state["dyn_recos_rows"] = rows  # <-- ensure Apply can read
+
             if st.button("Apply to Generation"):
                 ss = st.session_state
-                recs = ss.get("dyn_recos_rows") or ss.get("dyn_recos_preview_rows") or ss.get("dyn_recos") or []
-                # ^ use whichever var holds your list of recommendation dicts
+                recs = ss.get("dyn_recos_rows") or ss.get("dyn_recos_preview") or []
 
                 picked_names = []
                 weights_map = {}
@@ -205,23 +202,22 @@ def _recommend_dynamic_sections(cfg, oai: OpenAI):
                         continue
                     w = int(r.get("weight") or r.get("priority") or r.get("score") or 0)
                     weights_map[name] = w
-                    if w >= 3:   # your threshold
+                    if w >= 3:   # threshold
                         picked_names.append(name)
 
-                # 1) Give the Generation page EVERYTHING it needs
-                ss["gen_dynamic_recos"] = recs                 # full objects (names, weights, etc.)
-                ss["gen_dyn_sel"] = picked_names               # the actual selection
-                ss["gen_dyn_weights"] = weights_map            # name -> weight for ordering
+                # 1) hand off to Generation
+                ss["gen_dynamic_recos"] = recs
+                ss["gen_dyn_sel"] = picked_names
+                ss["gen_dyn_weights"] = weights_map
 
-                # 2) Prevent the Gen tab’s init from clobbering user picks on first load
-                import json, hashlib
-                facts = ss.get("rfp_facts") or {}
-                facts_hash = hashlib.sha1(json.dumps(facts, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+                # 2) prevent Gen tab init from clobbering user picks on first load
+                import hashlib
+                facts_now = ss.get("rfp_facts") or {}
+                facts_hash = hashlib.sha1(json.dumps(facts_now, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
                 ss["gen_last_facts_hash"] = facts_hash
                 ss["gen_initialized"] = True
 
                 st.success(f"Applied {len(picked_names)} dynamic sections to Proposal Generation.")
-
 
 # ----------------------------- Main Render -----------------------------
 def render_understanding(
@@ -262,46 +258,51 @@ def render_understanding(
         do_gen = st.button("🚀 Generate Understanding", type="primary")
     with col_g2:
         add_notes = st.text_input("Optional notes / emphasis (affects retrieval cues)", value="")
-
+    
     if do_gen:
         store = st.session_state.get("up_store")
         if not store:
             st.warning("Please upload files first — no uploaded vector store available.")
         else:
-            prompt = (
-                "Context focus cues: contact details; submission instructions; schedule; evaluation; scope; compliance; proposal organization; minimum qualifications\n\n"
-                "Using only the provided context, extract an RFP Understanding as strict JSON. Return ONLY a single JSON object, no prose.\n\n"
-                f"{SCHEMA_HINT}\n\n"
-                f"Notes/Priorities: {add_notes}"
-            )
+            # 1) Use the hardened extractor (does big schema + sectional fallbacks + lenient JSON parsing)
             try:
-                out, _ = rag_answer_uploaded(store, oai, cfg, prompt, top_k=12)
+                facts, raw = extract_rfp_facts(store, oai, cfg, return_raw=True)
             except Exception as e:
-                out = f"(LLM/RAG error) {e}"
-            try:
-                parsed = _coerce_json(out)
-                facts = _ensure_dict(parsed)
-            except Exception:
-                st.error("The model did not return valid JSON. Showing raw output below.")
-                st.code(out)
-                facts = {}
-            if facts:
-                sch = facts.get("schedule") or {}
-                for k in ["release_date","qna_deadline","addendum_final_date","submission_due","award_target_date","anticipated_start_date"]:
-                    if isinstance(sch.get(k), str): sch[k] = {"date": sch[k]}
-                for k in ["pre_bid_conference","site_visit"]:
-                    v = sch.get(k)
-                    if isinstance(v, str): sch[k] = {"datetime": v, "location": ""}
-                facts["schedule"] = sch
-                st.session_state["rfp_facts"] = facts
-                path = save_rfp_facts_json(RFP_FACTS_DIR, facts, "rfp_facts_latest.json")
-                st.success(f"Understanding JSON saved → {path.name}")
+                facts, raw = {}, f"(LLM/RAG error) {e}"
+
+            # 2) Normalize shell so all top-level keys exist
+            facts = _normalize_shell(facts or {})
+
+            # 3) Schedule normalization (safe even if sparse)
+            sch = facts.get("schedule") or {}
+            for k in ["release_date","qna_deadline","addendum_final_date","submission_due","award_target_date","anticipated_start_date"]:
+                if isinstance(sch.get(k), str):
+                    sch[k] = {"date": sch[k]}
+            for k in ["pre_bid_conference","site_visit"]:
+                v = sch.get(k)
+                if isinstance(v, str):
+                    sch[k] = {"datetime": v, "location": ""}
+            facts["schedule"] = sch
+
+            # 4) Only warn AFTER normalization if it's still effectively empty
+            if _is_effectively_empty(facts):
+                _add_missing_notes(facts)  # keep UI stable
+                st.warning("Couldn’t extract structured facts confidently from the retrieved context. Raw model output below.")
+                with st.expander("Show raw model output", expanded=False):
+                    st.code((raw or "")[:8000])
+
+            # 5) Persist
+            st.session_state["rfp_facts"] = facts
+            path = save_rfp_facts_json(RFP_FACTS_DIR, facts, "rfp_facts_latest.json")
+            st.success(f"Understanding JSON saved → {path.name}")
 
     # Facts viewer
     facts = st.session_state.get("rfp_facts")
     if isinstance(facts, str):
-        try: facts = _ensure_dict(_coerce_json(facts))
-        except Exception: facts = {}
+        try:
+            facts = _ensure_dict(_coerce_json(facts))
+        except Exception:
+            facts = {}
     if facts:
         st.markdown("### 📑 Understanding Summary")
         render_rfp_facts(facts)
@@ -328,7 +329,7 @@ def render_understanding(
     add_toc = st.checkbox("Add Table of Contents", value=True)
     if st.button("Build & Download"):
         facts = st.session_state.get("rfp_facts") or {}
-        
+
         rfp_msgs = st.session_state.get("rfp_chat_messages", [])
         sp_msgs = st.session_state.get("sp_chat_messages", [])
         try:
