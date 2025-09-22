@@ -62,10 +62,18 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_4483287425F14D34A6F41E13AB62DFB7 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1A43D1CDB5DC4B909BA4E27F65044D73 }}
 
+      - name: Show last Kudu deployment log (human readable)
+        run: |
+          az webapp deployment list --name "$APP" --resource-group "$RG" --query "[0].id" -o tsv || true
+          az webapp log deployment show --name "$APP" --resource-group "$RG" --query "log" -o tsv || true
+        env:
+          APP: ${{ env.AZURE_WEBAPP_NAME }}
+          RG:  ${{ env.AZURE_RESOURCE_GROUP }}
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
           app-name: 'bctpropgen'
           slot-name: 'Production'
+
           
