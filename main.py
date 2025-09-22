@@ -29,10 +29,6 @@ load_dotenv()   # <---- add this at the top of main.py, before Config()
 
 import os
 
-import subprocess
-st.write("STREAMLIT_CONFIG_FILE =", os.getenv("STREAMLIT_CONFIG_FILE"))
-st.code(subprocess.check_output(["python","-m","streamlit","config","show"], text=True))
-
 
 # LangChain telemetry / tracing
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "false")

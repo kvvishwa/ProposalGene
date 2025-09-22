@@ -5,7 +5,7 @@
     "department_or_office": "Information Technology",
     "solicitation_id": "RFP193272",
     "solicitation_title": "SAP On-Call Professional Services",
-    "communication_policy": "Correspondence shall be communicated through the City's electronic procurement system."
+    "communication_policy": "Questions or comments regarding this RFP must be submitted to the Questions & Answers section of this project listing on OpenGov."
   },
   "points_of_contact": [
     {
@@ -61,7 +61,7 @@
       "tz": null,
       "delivery_cutoff_policy": "The e-procurement system will not accept any proposals after the specified close time.",
       "provenance": [
-        "Proposals shall be in a submitted status no later than 3:00 pm on Wednesday, February 12, 2025."
+        "Request for Proposal (RFP) #RFP193272, Page 4"
       ]
     },
     "award_target_date": {
@@ -84,18 +84,18 @@
     "physical_address": "",
     "copies_required": "",
     "format_requirements": [
-      ""
+      "Proposals shall address the following items in the order listed and shall be numbered in the proposal document."
     ],
     "labeling_instructions": "",
     "registration_requirements": "",
     "late_submissions_policy": "The e-procurement system will not accept any proposals after the specified close time.",
     "provenance": [
-      "All proposals shall be submitted electronically through the City's electronic procurement system (OpenGov) at: https://procurement.opengov.com/portal/palo-alto-ca"
+      "Request for Proposal (RFP) #RFP193272, Page 4"
     ]
   },
   "minimum_qualifications": {
     "licenses_certifications": [
-      "SAP certifications"
+      ""
     ],
     "years_experience": "",
     "similar_projects": "",
@@ -107,39 +107,33 @@
     ],
     "financials": "",
     "other_mandatory": [
-      "deep technical expertise"
+      ""
     ],
-    "provenance": [
-      "Vendors are expected to have deep technical expertise, SAP certifications, and the ability to work collaboratively with the City to deliver high-quality, reliable solutions."
-    ]
+    "provenance": []
   },
   "proposal_organization": {
     "required_sections": [
-      ""
+      "Proposal Summary",
+      "Qualifications of the Firm(s)"
     ],
-    "page_limits": [
-      {
-        "section": "Proposal Summary",
-        "limit": "3 pages"
-      }
-    ],
+    "page_limits": [],
     "mandatory_forms": [
       "Firm_Experience.pdf"
     ],
-    "pricing_format": "",
+    "pricing_format": "The fees/costs portion of your proposal should be attached separately.",
     "exceptions_policy": "",
     "provenance": [
-      "This Section of the Proposal shall discuss the highlights, key features and distinguishing points of the Proposal. Limit this Section to a total of three (3) pages including the separate sheet."
+      "Request for Proposal (RFP) #RFP193272, Page 5"
     ]
   },
   "evaluation_and_selection": {
     "criteria": [
       {
         "name": "Quality of the Proposal",
-        "weight": "N/A",
+        "weight": "",
         "description": "Quality and completeness of proposal",
         "provenance": [
-          "Quality of the Proposal (Required) Quality and completeness of proposal"
+          "Request for Proposal (RFP) #RFP193272, Page 10"
         ]
       }
     ],
@@ -181,37 +175,27 @@
     "provenance": []
   },
   "missing_notes": [
-    "Issuing entity type not specified.",
-    "Release date not found.",
-    "Pre-bid conference details not found.",
-    "Site visit details not found.",
-    "Q&A deadline not found.",
-    "Addendum final date not found.",
-    "Award target date not found.",
-    "Anticipated start date not found.",
-    "Proposal validity days not specified.",
-    "Contract term not specified.",
-    "Renewal options not specified.",
-    "Copies required not specified.",
-    "Format requirements not specified.",
-    "Labeling instructions not specified.",
-    "Registration requirements not specified.",
-    "Insurance requirements not specified.",
-    "Bonding requirements not specified.",
-    "Financial requirements not specified.",
-    "Required sections not fully specified.",
-    "Pricing format not specified.",
-    "Exceptions policy not specified.",
-    "Pass/fail criteria not specified.",
-    "Oral presentations not specified.",
-    "Demonstrations not specified.",
-    "Best and final offers not specified.",
-    "Negotiations not specified.",
-    "Selection process summary not specified.",
-    "Protest procedure not specified.",
-    "Key terms not specified.",
-    "Security and privacy terms not specified.",
-    "SOW summary not specified."
+    "Issuing entity type is not specified.",
+    "Release date is not provided.",
+    "Pre-bid conference details are missing.",
+    "Site visit details are missing.",
+    "Q&A deadline is not specified.",
+    "Addendum final date is not provided.",
+    "Award target date is not specified.",
+    "Anticipated start date is not provided.",
+    "Proposal validity days are not mentioned.",
+    "Contract term and renewal options are not specified.",
+    "Minimum qualifications details are missing.",
+    "Insurance requirements are not detailed.",
+    "Bonding requirements are not mentioned.",
+    "Financial requirements are not specified.",
+    "Exceptions policy is not detailed.",
+    "Pass/fail criteria are not specified.",
+    "Oral presentations and demonstrations requirements are not detailed.",
+    "Best and final offers and negotiations policies are not specified.",
+    "Selection process summary is not provided.",
+    "Protest procedure is not detailed.",
+    "Contract and compliance key terms and security/privacy details are missing."
   ],
   "scope": {}
 }

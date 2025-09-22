@@ -60,14 +60,20 @@ def _gather_understanding_context(store: Any, prompt: str, base_k: int = 8) -> T
 
     # 2) standard understanding cues (cover all sections)
     std = [
-        "contact email phone procurement communications",
-        "submission instructions portal copies labeling registration format",
-        "schedule due date deadlines pre-bid site visit Q&A addendum award",
-        "evaluation criteria weighting selection process BAFO negotiations protest",
-        "minimum qualifications insurance bonding certification years experience",
-        "proposal organization page limits required sections forms pricing",
-        "contract terms compliance privacy security scope of work",
+    # Scope-first sweep (tasks, deliverables, boundaries, volumes)
+    "scope of work tasks deliverables responsibilities assumptions exclusions in scope out of scope",
+    "work locations onsite remote coverage geographies service windows volumes throughput headcount",
+    "service levels SLAs KPIs response time resolution time uptime penalties credits reporting cadence",
+    # Then the usual sections
+    "contact email phone procurement communications",
+    "submission instructions portal copies labeling registration format",
+    "schedule due date deadlines pre-bid site visit Q&A addendum award",
+    "evaluation criteria weighting selection process BAFO negotiations protest",
+    "minimum qualifications insurance bonding certification years experience",
+    "proposal organization page limits required sections forms pricing",
+    "contract terms compliance privacy security",
     ]
+    
     # prepend prompt-derived cues if any, then fallback to std list
     queries = cues + std
 
@@ -106,7 +112,7 @@ def _gather_understanding_context(store: Any, prompt: str, base_k: int = 8) -> T
             seen.add(sig)
             pool.append(e)
 
-        if len(pool) >= 60:  # enough context
+        if len(pool) >= 120:  # enough context
             break
 
     if not pool:
@@ -392,9 +398,17 @@ def rag_answer_uploaded(up_store: Any, oai, cfg, prompt: str, top_k: int = 12) -
 
     # 3) Ask the model tightly
     sys = (
-        "You are a precise assistant. Answer ONLY using the provided context. "
-        "If something is missing, say 'Not found in provided context'."
-    )
+        "You are a precise assistant for the user's uploaded RFP documents. "
+        "Answer ONLY using the provided context. Cite sources with [1], [2]. "
+        "If not found in context, say you don't know.\n\n"
+        "When the question is broad or unspecified, lead with a SCOPED SUMMARY section:\n"
+        "• In-scope tasks & deliverables\n"
+        "• Out-of-scope / exclusions (if stated)\n"
+        "• Roles/responsibilities & expected staffing hints (if present)\n"
+        "• Service levels / KPIs / reporting (if present)\n"
+        "• Volumes, locations, coverage hours (if present)\n"
+        "Keep this section 4–8 bullets, each with appropriate [n] footnotes."
+        )   
     user = f"CONTEXT:\n{ctx}\n\nQUESTION:\n{prompt}\n\nAnswer succinctly. Return JSON exactly when requested."
     try:
         res = oai.chat.completions.create(
