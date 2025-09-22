@@ -54,7 +54,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-      
+          
+      - name: Add Streamlit config
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .streamlit
+          if [ -f ./.streamlit/config.toml ]; then
+            echo "Using existing .streamlit/config.toml"
+          else
+            echo "No config.toml found — create or include it in your artifact"
+          fi
+           
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -77,5 +88,8 @@ jobs:
           slot-name: 'Production'
 
           
+
+
+
 
 
