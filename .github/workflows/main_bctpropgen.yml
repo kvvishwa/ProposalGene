@@ -62,6 +62,12 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_4483287425F14D34A6F41E13AB62DFB7 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_1A43D1CDB5DC4B909BA4E27F65044D73 }}
 
+      - name: Config Settings
+        run: |
+          az webapp config appsettings set \
+          --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+          --name ${{ env.AZURE_WEBAPP_NAME }} \
+          --settings DISABLE_HUGO_BUILD=true
       - name: Show last Kudu deployment log (human readable)
         run: |
           az webapp deployment list --name "$APP" --resource-group "$RG" --query "[0].id" -o tsv || true
@@ -77,3 +83,4 @@ jobs:
           slot-name: 'Production'
 
           
+
