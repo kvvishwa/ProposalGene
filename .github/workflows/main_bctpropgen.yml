@@ -54,7 +54,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: python-app
-      
+          
+      #  Ensure .streamlit/config.toml is copied into place
+      - name: Add Streamlit config
+        run: |
+          mkdir -p .streamlit
+          cp .streamlit/config.toml ./ || echo "No config.toml found
+          
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -77,5 +83,6 @@ jobs:
           slot-name: 'Production'
 
           
+
 
 
