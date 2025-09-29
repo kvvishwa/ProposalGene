@@ -94,7 +94,7 @@ def _dedup_key(ev: Evidence) -> str:
 
 # ------------------------ Tunables (env-configurable) ------------------------
 
-_PER_SOURCE_CAP = int(os.getenv("RETRIEVAL_PER_SOURCE_CAP", "14"))  # default 6 (was 3)
+_PER_SOURCE_CAP = int(os.getenv("RETRIEVAL_PER_SOURCE_CAP", "6"))  # default 6 (was 3)
 
 
 def _limit_per_source(evs: Sequence[Evidence], k: int, per_source: int = _PER_SOURCE_CAP) -> List[Evidence]:

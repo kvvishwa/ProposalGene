@@ -48,54 +48,6 @@ def _normalize(s: str) -> str:
 
 
 # ------------------------
-# Numbering sanitizer & section skipper
-# ------------------------
-def _strip_numPr_in_paragraph(p_elm) -> None:
-    """Remove numbering from a paragraph to avoid missing num/abstractNum definitions."""
-    if _local_name(p_elm.tag) != "p":
-        return
-    pPr = None
-    for ch in getattr(p_elm, "iterchildren", lambda: [])():
-        if _local_name(ch.tag) == "pPr":
-            pPr = ch
-            break
-    if pPr is None:
-        return
-    to_remove = []
-    for ch in getattr(pPr, "iterchildren", lambda: [])():
-        if _local_name(ch.tag) == "numPr":
-            to_remove.append(ch)
-    for n in to_remove:
-        pPr.remove(n)
-
-
-def _strip_nested_numPr(elm) -> None:
-    """Walk element and remove numPr in any descendant paragraphs (incl. tables)."""
-    if _local_name(elm.tag) == "p":
-        _strip_numPr_in_paragraph(elm)
-    for ch in list(getattr(elm, "iterchildren", lambda: [])()):
-        _strip_nested_numPr(ch)
-
-
-def _is_sectPr(elm) -> bool:
-    return _local_name(elm.tag) == "sectPr"
-
-
-def _safe_body_blocks(src_doc: Document):
-    """
-    Yield deep-copied body blocks from src_doc with:
-      - SECTION PROPERTIES removed
-      - list numbering stripped (w:numPr)
-    """
-    for blk in src_doc._element.body.iterchildren():
-        if _is_sectPr(blk):
-            continue
-        clean = deepcopy(blk)
-        _strip_nested_numPr(clean)
-        yield clean
-
-
-# ------------------------
 # Anchor discovery
 # ------------------------
 def _find_sdt_anchor(doc: Document, label: str):
@@ -164,7 +116,7 @@ def _find_marker_paragraph(doc: Document, label: str):
 
 
 # ------------------------
-# Insertion primitives (SANITIZED)
+# Insertion primitives
 # ------------------------
 def _insert_blocks_into_sdt(sdt_el, frag_doc: Document):
     """
@@ -179,9 +131,9 @@ def _insert_blocks_into_sdt(sdt_el, frag_doc: Document):
     for ch in list(getattr(sdt_content, "iterchildren", lambda: [])()):
         sdt_content.remove(ch)
 
-    # Append sanitized blocks from fragment's body
-    for blk in _safe_body_blocks(frag_doc):
-        sdt_content.append(blk)
+    # Append deep-copied blocks from fragment's body
+    for blk in frag_doc._element.body.iterchildren():
+        sdt_content.append(deepcopy(blk))
     return True
 
 
@@ -194,9 +146,10 @@ def _insert_blocks_after(host_block_el, frag_doc: Document):
         return False
 
     after = host_block_el
-    for blk in _safe_body_blocks(frag_doc):
-        parent.insert(parent.index(after) + 1, blk)
-        after = blk
+    for blk in frag_doc._element.body.iterchildren():
+        new_blk = deepcopy(blk)
+        parent.insert(parent.index(after) + 1, new_blk)
+        after = new_blk
     return True
 
 
@@ -206,14 +159,11 @@ def _append_blocks_to_document(doc: Document, frag_doc: Document, heading_text: 
     """
     if heading_text:
         h = doc.add_paragraph(heading_text)
-        try:
-            h.style = "Heading 1"
-        except Exception:
-            pass
-    # Append sanitized blocks at XML level for full fidelity
+        h.style = "Heading 1"
+    # Append blocks at XML level for full fidelity
     body = doc._element.body
-    for blk in _safe_body_blocks(frag_doc):
-        body.append(blk)
+    for blk in frag_doc._element.body.iterchildren():
+        body.append(deepcopy(blk))
     return True
 
 
@@ -259,11 +209,14 @@ def insert_section(
             after = parent[idx - 1] if idx > 0 else None
             # If there's a previous block, insert after it; else insert at start
             if after is not None:
-                _insert_blocks_after(after, section_doc)
+                for blk in section_doc._element.body.iterchildren():
+                    new_blk = deepcopy(blk)
+                    parent.insert(parent.index(after) + 1, new_blk)
+                    after = new_blk
             else:
                 # insert at the beginning of body
-                for blk in reversed(list(_safe_body_blocks(section_doc))):
-                    parent.insert(0, blk)
+                for blk in reversed(list(section_doc._element.body.iterchildren())):
+                    parent.insert(0, deepcopy(blk))
             return True, "marker"
 
     # 4) Fallback: append to end (optionally with Heading 1)

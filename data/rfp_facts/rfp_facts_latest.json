@@ -1,28 +1,34 @@
 {
   "solicitation": {
-    "issuing_entity_name": "City of Palo Alto",
+    "issuing_entity_name": "",
     "issuing_entity_type": "",
-    "department_or_office": "Information Technology",
+    "department_or_office": "",
     "solicitation_id": "RFP193272",
     "solicitation_title": "SAP On-Call Professional Services",
-    "communication_policy": "Questions or comments regarding this RFP must be submitted to the Questions & Answers section of this project listing on OpenGov."
+    "communication_policy": ""
   },
   "points_of_contact": [
     {
       "primary": true,
-      "name": "Alice Harrison",
-      "title": "Contract Administrator",
-      "email": "alice.harrison@cityofpaloalto.org",
-      "phone": "(650) 329-2173",
+      "name": "",
+      "title": "",
+      "email": "",
+      "phone": "",
       "address": "",
       "notes": ""
     }
   ],
   "schedule": {
     "release_date": {
-      "date": "",
+      "date": "2025-01-16",
       "tz": null,
-      "provenance": []
+      "provenance": [
+        {
+          "quote": "Release Project Date: January 16, 2025",
+          "source": "RFP193272",
+          "locator": "Timeline"
+        }
+      ]
     },
     "pre_bid_conference": {
       "required": null,
@@ -46,10 +52,16 @@
       "provenance": []
     },
     "qna_deadline": {
-      "date": "",
-      "time": "",
+      "date": "2025-02-04",
+      "time": "13:00",
       "tz": null,
-      "provenance": []
+      "provenance": [
+        {
+          "quote": "Question Submission Deadline: February 4, 2025, 1:00pm",
+          "source": "RFP193272",
+          "locator": "Timeline"
+        }
+      ]
     },
     "addendum_final_date": {
       "date": "",
@@ -59,9 +71,13 @@
       "date": "2025-02-12",
       "time": "15:00",
       "tz": null,
-      "delivery_cutoff_policy": "The e-procurement system will not accept any proposals after the specified close time.",
+      "delivery_cutoff_policy": "",
       "provenance": [
-        "Request for Proposal (RFP) #RFP193272, Page 4"
+        {
+          "quote": "Proposal Submission Deadline: February 12, 2025, 3:00pm",
+          "source": "RFP193272",
+          "locator": "Timeline"
+        }
       ]
     },
     "award_target_date": {
@@ -77,21 +93,19 @@
     "renewal_options": ""
   },
   "submission_instructions": {
-    "method": "electronically",
-    "portal_name": "OpenGov",
-    "portal_url": "https://procurement.opengov.com/portal/palo-alto-ca",
+    "method": "",
+    "portal_name": "",
+    "portal_url": "",
     "email_address": "",
     "physical_address": "",
     "copies_required": "",
     "format_requirements": [
-      "Proposals shall address the following items in the order listed and shall be numbered in the proposal document."
+      ""
     ],
     "labeling_instructions": "",
     "registration_requirements": "",
-    "late_submissions_policy": "The e-procurement system will not accept any proposals after the specified close time.",
-    "provenance": [
-      "Request for Proposal (RFP) #RFP193272, Page 4"
-    ]
+    "late_submissions_policy": "",
+    "provenance": []
   },
   "minimum_qualifications": {
     "licenses_certifications": [
@@ -113,18 +127,20 @@
   },
   "proposal_organization": {
     "required_sections": [
-      "Proposal Summary",
-      "Qualifications of the Firm(s)"
+      ""
     ],
-    "page_limits": [],
+    "page_limits": [
+      {
+        "section": "",
+        "limit": ""
+      }
+    ],
     "mandatory_forms": [
-      "Firm_Experience.pdf"
+      ""
     ],
-    "pricing_format": "The fees/costs portion of your proposal should be attached separately.",
+    "pricing_format": "",
     "exceptions_policy": "",
-    "provenance": [
-      "Request for Proposal (RFP) #RFP193272, Page 5"
-    ]
+    "provenance": []
   },
   "evaluation_and_selection": {
     "criteria": [
@@ -133,7 +149,11 @@
         "weight": "",
         "description": "Quality and completeness of proposal",
         "provenance": [
-          "Request for Proposal (RFP) #RFP193272, Page 10"
+          {
+            "quote": "Quality of the Proposal (Required) Quality and completeness of proposal",
+            "source": "RFP193272",
+            "locator": "Evaluation Criteria"
+          }
         ]
       }
     ],
@@ -175,27 +195,70 @@
     "provenance": []
   },
   "missing_notes": [
-    "Issuing entity type is not specified.",
-    "Release date is not provided.",
-    "Pre-bid conference details are missing.",
-    "Site visit details are missing.",
-    "Q&A deadline is not specified.",
-    "Addendum final date is not provided.",
-    "Award target date is not specified.",
-    "Anticipated start date is not provided.",
-    "Proposal validity days are not mentioned.",
-    "Contract term and renewal options are not specified.",
-    "Minimum qualifications details are missing.",
-    "Insurance requirements are not detailed.",
-    "Bonding requirements are not mentioned.",
-    "Financial requirements are not specified.",
-    "Exceptions policy is not detailed.",
-    "Pass/fail criteria are not specified.",
-    "Oral presentations and demonstrations requirements are not detailed.",
-    "Best and final offers and negotiations policies are not specified.",
-    "Selection process summary is not provided.",
-    "Protest procedure is not detailed.",
-    "Contract and compliance key terms and security/privacy details are missing."
+    "Issuing entity details are not provided in the context.",
+    "Points of contact details are not provided in the context.",
+    "Submission instructions are not detailed in the context.",
+    "Minimum qualifications are not specified in the context.",
+    "Proposal organization details are not provided in the context.",
+    "Contract and compliance details are not provided in the context."
   ],
-  "scope": {}
+  "scope": {
+    "in_scope": [
+      "SERVICES AND DELIVERABLES TO BE PROVIDED",
+      "SCHEDULE OF PERFORMANCE",
+      "MAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)",
+      "REIMBURSABLE EXPENSES, if any (with 'not to exceed' amount)",
+      "Task Order Scope of Services"
+    ],
+    "out_of_scope": [],
+    "scope_raw": [
+      "SERVICES AND DELIVERABLES TO BE PROVIDED",
+      "SCHEDULE OF PERFORMANCE",
+      "MAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)",
+      "REIMBURSABLE EXPENSES, if any (with 'not to exceed' amount)",
+      "Task Order Scope of Services"
+    ],
+    "provenance": [
+      {
+        "source": "C:\\Users\\vk115720\\AppData\\Local\\Temp\\tmpr61tpxqu.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "C:\\Users\\vk115720\\AppData\\Local\\Temp\\tmp_ns45qe1.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "C:\\Users\\vk115720\\AppData\\Local\\Temp\\tmpmj_4bo8e.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "C:\\Users\\vk115720\\AppData\\Local\\Temp\\tmpwxy2_7j0.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "data\\uploads\\Attachment_-_Professional_Services_Agreement_Sample.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "data\\uploads\\Attachment_-_Professional_Services_Agreement_Sample.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "data\\uploads\\Attachment_-_Professional_Services_Agreement_Sample.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      },
+      {
+        "source": "data\\uploads\\Attachment_-_Professional_Services_Agreement_Sample.docx",
+        "page": null,
+        "quote": "BALANCE REMAINING IN MASTER AGREEMENT/CONTRACT $_______________\n\n5.\tBUDGET CODE_______________\n\nCOST CENTER________________ \n\nCOST ELEMENT______________\n\nWBS/CIP__________\n\nPHASE__________\n\n6.\tCITY PROJECT MANAGER’S NAME & DEPARTMENT:_____________________________________\n\n7.\tDESCRIPTION OF SCOPE OF SERVICES (Attachment A)\n\nMUST INCLUDE:\n\nSERVICES AND DELIVERABLES TO BE PROVIDED \n\nSCHEDULE OF PERFORMANCE\n\nMAXIMUM COMPENSATION AMOUNT AND RATE SCHEDULE (as applicable)\n\nREIMBURSABLE EXPENSES, if any (with “not to exceed” amount)\n\n8.\tATTACHMENTS:    A:  Task Order Scope of Services     B (if any): "
+      }
+    ]
+  }
 }

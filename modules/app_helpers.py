@@ -60,20 +60,14 @@ def _gather_understanding_context(store: Any, prompt: str, base_k: int = 8) -> T
 
     # 2) standard understanding cues (cover all sections)
     std = [
-    # Scope-first sweep (tasks, deliverables, boundaries, volumes)
-    "scope of work tasks deliverables responsibilities assumptions exclusions in scope out of scope",
-    "work locations onsite remote coverage geographies service windows volumes throughput headcount",
-    "service levels SLAs KPIs response time resolution time uptime penalties credits reporting cadence",
-    # Then the usual sections
-    "contact email phone procurement communications",
-    "submission instructions portal copies labeling registration format",
-    "schedule due date deadlines pre-bid site visit Q&A addendum award",
-    "evaluation criteria weighting selection process BAFO negotiations protest",
-    "minimum qualifications insurance bonding certification years experience",
-    "proposal organization page limits required sections forms pricing",
-    "contract terms compliance privacy security",
+        "contact email phone procurement communications",
+        "submission instructions portal copies labeling registration format",
+        "schedule due date deadlines pre-bid site visit Q&A addendum award",
+        "evaluation criteria weighting selection process BAFO negotiations protest",
+        "minimum qualifications insurance bonding certification years experience",
+        "proposal organization page limits required sections forms pricing",
+        "contract terms compliance privacy security scope of work",
     ]
-    
     # prepend prompt-derived cues if any, then fallback to std list
     queries = cues + std
 
@@ -112,7 +106,7 @@ def _gather_understanding_context(store: Any, prompt: str, base_k: int = 8) -> T
             seen.add(sig)
             pool.append(e)
 
-        if len(pool) >= 120:  # enough context
+        if len(pool) >= 60:  # enough context
             break
 
     if not pool:
@@ -265,16 +259,15 @@ def st_rerun_compat() -> None:
 # ---------------------------------------------------------------------
 # Retrieval bridges & simple RAG
 # ---------------------------------------------------------------------
-# modules/app_helpers.py  (patch the _similarity_search function)
-
 def _similarity_search(store: Any, query: str, k: int) -> List[Any]:
     """
     Call the store's similarity search with broad compatibility.
+    Expected to return a list of 'document-like' objects with:
+      - page_content or content (str)
+      - metadata (dict) optionally containing 'source'
     """
     if store is None:
         return []
-
-    # 1) Native similarity_search (vectorstores)
     if hasattr(store, "similarity_search"):
         try:
             return store.similarity_search(query, k=k) or []
@@ -285,34 +278,17 @@ def _similarity_search(store: Any, query: str, k: int) -> List[Any]:
                 return []
         except Exception:
             return []
-
-    # 2) "search" method (some stores expose this)
     if hasattr(store, "search"):
         try:
             return store.search(query, k=k) or []
         except Exception:
             return []
-
-    # 3) LangChain retriever (API changed: .invoke is preferred over .get_relevant_documents)
     if hasattr(store, "as_retriever"):
         try:
             retr = store.as_retriever(search_kwargs={"k": k})
-            try:
-                # New LC Core: Runnable-like
-                docs = retr.invoke(query)                  # ✅ preferred
-            except (AttributeError, TypeError):
-                # Old API
-                docs = retr.get_relevant_documents(query)  # ↩️ fallback
-            except Exception:
-                # Some retrievers are callable
-                try:
-                    docs = retr(query)                     # 🧯 last resort
-                except Exception:
-                    docs = []
-            return docs or []
+            return retr.get_relevant_documents(query) or []
         except Exception:
             return []
-
     return []
 
 def sp_index_stats(cfg) -> Tuple[int, str]:
@@ -398,17 +374,9 @@ def rag_answer_uploaded(up_store: Any, oai, cfg, prompt: str, top_k: int = 12) -
 
     # 3) Ask the model tightly
     sys = (
-        "You are a precise assistant for the user's uploaded RFP documents. "
-        "Answer ONLY using the provided context. Cite sources with [1], [2]. "
-        "If not found in context, say you don't know.\n\n"
-        "When the question is broad or unspecified, lead with a SCOPED SUMMARY section:\n"
-        "• In-scope tasks & deliverables\n"
-        "• Out-of-scope / exclusions (if stated)\n"
-        "• Roles/responsibilities & expected staffing hints (if present)\n"
-        "• Service levels / KPIs / reporting (if present)\n"
-        "• Volumes, locations, coverage hours (if present)\n"
-        "Keep this section 4–8 bullets, each with appropriate [n] footnotes."
-        )   
+        "You are a precise assistant. Answer ONLY using the provided context. "
+        "If something is missing, say 'Not found in provided context'."
+    )
     user = f"CONTEXT:\n{ctx}\n\nQUESTION:\n{prompt}\n\nAnswer succinctly. Return JSON exactly when requested."
     try:
         res = oai.chat.completions.create(

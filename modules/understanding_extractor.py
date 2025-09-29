@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json as pyjson
 import re
-import ast
 from typing import Dict, List, Tuple, Iterable, Optional
 
 from modules.type import ProposalContext, SectionPlan, GenerationKnobs, DYNAMIC_SECTION_CATALOG
@@ -545,11 +544,8 @@ RETRIEVAL_CUES: Dict[str, str] = {
 # Extractor (hardened)
 # -----------------------------------------------------------------------------
 def _ask(up_store, oai, cfg, prompt: str, top_k: int = 12) -> Tuple[str, List[str]]:
-    try:
-        return rag_answer_uploaded(up_store, oai, cfg, prompt, top_k=top_k)
-    except Exception as e:
-        # Never blow up the extractor if retrieval/model hiccups
-        return ("", [f"(rag_error) {e}"])
+    return rag_answer_uploaded(up_store, oai, cfg, prompt, top_k=top_k)
+
 
 def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
     """
@@ -561,7 +557,7 @@ def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
 
     # 1) Big schema pass
     raw1, _src1 = _ask(up_store, oai, cfg, _RFP_FACTS_PROMPT, top_k=12)
-    raw_all.append("## Big schema pass\n" + (raw1.strip() or "(no model text)"))
+    raw_all.append(raw1 or "")
     data = _normalize_shell(_safe_json_loads(raw1))
 
     # 2) If empty, try sectional passes
@@ -570,10 +566,11 @@ def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
             cue = RETRIEVAL_CUES.get(key, "")
             section_prompt = f"Context focus cues: {cue}\n\n{sprompt}".strip()
             raw, _src = _ask(up_store, oai, cfg, section_prompt, top_k=14)
-            raw_all.append(f"## Sectional pass: {key}\n" + (raw.strip() or "(no model text)"))
+            raw_all.append(raw or "")
             piece = _normalize_shell(_safe_json_loads(raw))
             if piece.get(key):
                 data = _merge_dict_deep(data, piece)
+
     # 3) Attach SCOPE mined directly from uploaded store
     try:
         scope = _mine_scope_from_store(up_store, k=12)
@@ -590,8 +587,9 @@ def extract_rfp_facts(up_store, oai, cfg, return_raw: bool = False):
     # 4) Add missing notes if still blanky
     _add_missing_notes(data)
 
-    raw_combined = "\n\n---\n\n".join([r for r in raw_all if r is not None])
+    raw_combined = "\n\n---\n\n".join([r for r in raw_all if r])
     return (data, raw_combined) if return_raw else data
+
 
 # -----------------------------------------------------------------------------
 # Convert facts → lean context
@@ -758,83 +756,26 @@ def _largest_brace_json(s: str) -> str | None:
         return s[best_start:best_end+1]
     return None
 
-# REPLACE the old _largest_brace_json with this unified scanner
-def _largest_json_block(s: str) -> Optional[str]:
-    """
-    Return the largest balanced {...} or [...] substring.
-    """
-    if not s:
-        return None
-    best = None
-    for opens, closes in (("{", "}"), ("[", "]")):
-        depth = 0
-        start = -1
-        for i, ch in enumerate(s):
-            if ch == opens:
-                if depth == 0:
-                    start = i
-                depth += 1
-            elif ch == closes and depth > 0:
-                depth -= 1
-                if depth == 0 and start != -1:
-                    cand = s[start:i+1]
-                    if best is None or len(cand) > len(best):
-                        best = cand
-                    start = -1
-    return best
-
-
-# UPDATE _parse_json_lenient to use _largest_json_block and try arrays too
-def _parse_json_lenient(text: str) -> Dict:
-    """
-    Try very hard to parse JSON from LLM output:
-    - strip code fences
-    - try direct json.loads
-    - grab largest balanced {...} or [...]
-    - remove trailing commas
-    - last resort: ast.literal_eval → re-serialize to strict JSON
-    """
-    if not text:
-        return {}
-    raw = _strip_code_fences(text).strip()
-    raw = raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
-
-    # 1) direct
-    try:
-        return pyjson.loads(raw)
-    except Exception:
-        pass
-
-    # 2) biggest JSON-ish slice
-    cand = _largest_json_block(raw) or raw
-
-    try:
-        return pyjson.loads(cand)
-    except Exception:
-        pass
-
-    # 3) kill trailing commas inside both objects & arrays
-    cand2 = re.sub(r",(\s*[}\]])", r"\1", cand)
-    if cand2 != cand:
-        try:
-            return pyjson.loads(cand2)
-        except Exception:
-            pass
-
-    # 4) last resort bridge
-    try:
-        obj = ast.literal_eval(cand)
-        return pyjson.loads(pyjson.dumps(obj))
-    except Exception:
-        return {}
-
-
 
 def _safe_json_loads(s: str) -> Dict:
     """
-    Lenient JSON loader used across extractors.
+    Try direct JSON load after stripping code fences. If that fails,
+    extract the largest balanced {...} block and load that.
     """
-    return _parse_json_lenient(s)
+    if not s:
+        return {}
+    s2 = _strip_code_fences(s).strip()
+    try:
+        return pyjson.loads(s2)
+    except Exception:
+        pass
+    cand = _largest_brace_json(s2)
+    if cand:
+        try:
+            return pyjson.loads(cand)
+        except Exception:
+            pass
+    return {}
 
 
 def extract_rfp_facts_from_raw_text(raw_text: str, oai, cfg, return_raw: bool = False):
@@ -857,20 +798,14 @@ def extract_rfp_facts_from_raw_text(raw_text: str, oai, cfg, return_raw: bool = 
         f"{_RFP_FACTS_PROMPT}"
     )
     try:
-        # Prefer strict JSON if the model supports it; fall back otherwise
         res = oai.chat.completions.create(
             model=cfg.ANALYSIS_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            response_format={"type": "json_object"},
         )
+        out = res.choices[0].message.content or ""
     except Exception:
-        res = oai.chat.completions.create(
-            model=cfg.ANALYSIS_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.0,
-        )
-    out = (res.choices[0].message.content or "") if hasattr(res, "choices") else ""
+        out = ""
 
     data = _normalize_shell(_safe_json_loads(out))
     if _is_effectively_empty(data):
@@ -936,7 +871,7 @@ def _mine_pocs_from_store(store, k: int = 8) -> List[dict]:
                 "address": "",
                 "notes": "mined from keyword context" if (emails or phones) else "",
             }
-            if entry(["email"] or entry["phone"]):
+            if entry["email"] or entry["phone"]:
                 found.append(entry)
 
     # de-dupe by (email, phone)

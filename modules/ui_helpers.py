@@ -9,21 +9,6 @@ import json
 import streamlit as st
 from streamlit.components.v1 import html as comp_html
 
-# --- add near the top of modules/ui_helpers.py (with other helpers) ---
-def _as_dateish_dict(val):
-    """
-    Coerce schedule-like values to a dict so .get() calls won't crash.
-    Accepts:
-      - dict: return as-is
-      - str: wrap as {"date": <str>}
-      - None/other: {}
-    """
-    if isinstance(val, dict):
-        return val
-    if isinstance(val, str):
-        return {"date": val}
-    return {}
-
 
 def inject_sticky_chat_css():
     st.markdown("""
@@ -162,13 +147,12 @@ def render_rfp_facts(facts: dict, show_provenance: bool = False):
 
     st.markdown("#### Schedule & Deadlines")
     def _sched_row(label, node_key):
-        node = _as_dateish_dict(sch.get(node_key))
-        # tolerate alternate keys like 'datetime'/'due'
-        date = node.get("date") or node.get("datetime") or node.get("due") or ""
+        node = sch.get(node_key) or {}
+        date = node.get("date") or ""
         time = node.get("time") or ""
-        tz   = node.get("tz") or node.get("timezone") or ""
-        pol  = node.get("delivery_cutoff_policy") or node.get("policy") or ""
-        st.write(f"**{label}**: {date} {time} {tz} {('— ' + pol) if pol else ''}")
+        tz = node.get("tz") or ""
+        pol = node.get("delivery_cutoff_policy") or ""
+        st.write(f"**{label}:** {date} {time} {('('+tz+')') if tz else ''} {('— '+pol) if pol else ''}")
         if show_provenance:
             _prov_expander(label, node.get("provenance") or [])
 
